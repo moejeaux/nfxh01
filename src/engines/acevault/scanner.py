@@ -30,11 +30,18 @@ class AltScanner:
 
         self._btc_df = self._fetch_candles("BTC")
 
+        skipped = sum(1 for c in markets if "/" in c or c.startswith("@"))
+        scannable = len(markets) - len(EXCLUDED_COINS & set(markets)) - skipped
+        logger.info("ACEVAULT_SCAN_FILTERING skipped_spot=%d skipped_index=%d scannable=%d",
+                     sum(1 for c in markets if "/" in c),
+                     sum(1 for c in markets if c.startswith("@")),
+                     scannable)
+
         candidates: list[AltCandidate] = []
         for coin in markets:
             if coin in EXCLUDED_COINS:
                 continue
-            if "/" in coin:
+            if "/" in coin or coin.startswith("@"):
                 continue
             try:
                 result = self._compute_weakness_score(coin, markets)
@@ -98,11 +105,11 @@ class AltScanner:
     ) -> AltCandidate | None:
         alt_df = self._fetch_candles(coin)
         if alt_df is None or len(alt_df) < 24:
-            logger.warning("ACEVAULT_SCANNER_DATA_MISSING coin=%s", coin)
+            logger.debug("ACEVAULT_SCANNER_DATA_MISSING coin=%s", coin)
             return None
 
         if self._btc_df is None or len(self._btc_df) < 24:
-            logger.warning("ACEVAULT_SCANNER_DATA_MISSING coin=%s", coin)
+            logger.debug("ACEVAULT_SCANNER_DATA_MISSING coin=%s reason=btc_data", coin)
             return None
 
         try:
@@ -110,13 +117,13 @@ class AltScanner:
                 alt_df, self._btc_df, window_bars=12
             )
         except (ValueError, ZeroDivisionError):
-            logger.warning("ACEVAULT_SCANNER_DATA_MISSING coin=%s", coin)
+            logger.debug("ACEVAULT_SCANNER_DATA_MISSING coin=%s reason=ratio_calc", coin)
             return None
 
         try:
             vol_1h = compute_volatility(alt_df, window_bars=12)
         except ValueError:
-            logger.warning("ACEVAULT_SCANNER_DATA_MISSING coin=%s", coin)
+            logger.debug("ACEVAULT_SCANNER_DATA_MISSING coin=%s reason=vol_calc", coin)
             return None
 
         if vol_1h == 0:

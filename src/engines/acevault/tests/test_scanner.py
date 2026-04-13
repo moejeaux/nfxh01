@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from unittest.mock import Mock, patch
 import pandas as pd
@@ -201,6 +203,7 @@ def test_volume_ratio_zero_mean_handled(mock_config, mock_hl_client):
 
 
 def test_insufficient_candle_data_skipped(mock_config, mock_hl_client, caplog):
+    caplog.set_level(logging.DEBUG)
     scanner = AltScanner(mock_config, mock_hl_client)
     
     # Mock candles_snapshot to return insufficient data for DOGE
@@ -248,6 +251,7 @@ def test_zero_volatility_skipped(mock_config, mock_hl_client):
 
 
 def test_indicators_exception_handling(mock_config, mock_hl_client, caplog):
+    caplog.set_level(logging.DEBUG)
     scanner = AltScanner(mock_config, mock_hl_client)
     
     # Mock compute_alt_btc_ratio to raise ValueError for DOGE
