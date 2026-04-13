@@ -30,13 +30,16 @@ class FathomAdvisory:
         return FathomSizeAdvice(size_multiplier=m)
 
     def call_with_timeout(self, fn: Callable[[], Any], default: Any) -> Any:
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(fn)
-            try:
-                return fut.result(timeout=self._timeout)
-            except FuturesTimeout:
-                log_acevault_event("FATHOM_TIMEOUT", detail="deterministic_default")
-                return default
+        ex = ThreadPoolExecutor(max_workers=1)
+        fut = ex.submit(fn)
+        try:
+            return fut.result(timeout=self._timeout)
+        except FuturesTimeout:
+            fut.cancel()
+            log_acevault_event("FATHOM_TIMEOUT", detail="deterministic_default")
+            return default
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
 
 
 def apply_fathom_payload(
