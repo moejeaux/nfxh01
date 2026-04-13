@@ -19,6 +19,7 @@ engines:
     cooldown_hours: 12
 
 acevault:
+  default_position_size_usd: 25
   # Fixed distance from entry to stop (percent). Immutable after position creation; risk layer rejects widening.
   stop_loss_distance_pct: 0.3
   max_candidates: 5
