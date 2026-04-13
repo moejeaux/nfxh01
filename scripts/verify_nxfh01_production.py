@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,24 +72,23 @@ async def fetch_real_market_data(hl_client: Info) -> dict:
     """Fetch real BTC market data for regime detection."""
     try:
         # Get BTC candles for returns and volatility
-        candles = hl_client.candles_snapshot(coin="BTC", interval="1h", limit=5)
+        now_ms = int(time.time() * 1000)
+        five_hours_ago_ms = now_ms - (5 * 60 * 60 * 1000)
+        candles = hl_client.candles_snapshot("BTC", "1h", five_hours_ago_ms, now_ms)
         if len(candles) < 2:
             raise ValueError("Insufficient BTC candle data")
         
-        # Calculate 1h return
-        current_close = float(candles[-1]["close"])
-        prev_close = float(candles[-2]["close"])
+        current_close = float(candles[-1]["c"])
+        prev_close = float(candles[-2]["c"])
         btc_1h_return = (current_close - prev_close) / prev_close
         
-        # Calculate 4h return (if we have enough data)
         if len(candles) >= 5:
-            four_h_ago_close = float(candles[-5]["close"])
+            four_h_ago_close = float(candles[-5]["c"])
             btc_4h_return = (current_close - four_h_ago_close) / four_h_ago_close
         else:
-            btc_4h_return = btc_1h_return * 4  # Rough approximation
+            btc_4h_return = btc_1h_return * 4
         
-        # Calculate 1h volatility (simplified)
-        prices = [float(c["close"]) for c in candles[-4:]]
+        prices = [float(c["c"]) for c in candles[-4:]]
         returns = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices))]
         btc_vol_1h = sum(abs(r) for r in returns) / len(returns) if returns else 0.004
         

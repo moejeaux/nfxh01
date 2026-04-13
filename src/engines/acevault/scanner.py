@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -32,6 +33,8 @@ class AltScanner:
         candidates: list[AltCandidate] = []
         for coin in markets:
             if coin in EXCLUDED_COINS:
+                continue
+            if "/" in coin:
                 continue
             try:
                 result = self._compute_weakness_score(coin, markets)
@@ -72,16 +75,22 @@ class AltScanner:
 
     def _fetch_candles(self, coin: str) -> pd.DataFrame | None:
         try:
+            now_ms = int(time.time() * 1000)
+            two_hours_ago_ms = now_ms - (2 * 60 * 60 * 1000)
             raw = self.hl_client.candles_snapshot(
-                coin=coin, interval="5m", limit=24
+                coin, "5m", two_hours_ago_ms, now_ms
             )
             if len(raw) < 24:
                 return None
             df = pd.DataFrame(raw)
+            col_map = {"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"}
+            df.rename(columns=col_map, inplace=True)
             for col in ("open", "high", "low", "close", "volume"):
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
             return df
-        except Exception:
+        except Exception as exc:
+            logger.debug("ACEVAULT_CANDLE_FETCH_FAIL coin=%s error=%s", coin, exc)
             return None
 
     def _compute_weakness_score(

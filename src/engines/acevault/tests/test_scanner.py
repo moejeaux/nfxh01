@@ -27,7 +27,7 @@ def mock_hl_client():
         "WIF": "2.50"
     }
     
-    def candles_side_effect(coin, interval, limit):
+    def candles_side_effect(coin, interval, startTime, endTime):
         base_prices = {
             "BTC": 80000,
             "DOGE": 0.15,
@@ -40,14 +40,14 @@ def mock_hl_client():
         
         candles = []
         for i in range(24):
-            price = base * (1 + (i - 12) * 0.001)  # Small price variation
+            price = base * (1 + (i - 12) * 0.001)
             volume = 1000 + i * 10
             candles.append({
-                "open": str(price * 0.999),
-                "high": str(price * 1.002),
-                "low": str(price * 0.998),
-                "close": str(price),
-                "volume": str(volume)
+                "o": str(price * 0.999),
+                "h": str(price * 1.002),
+                "l": str(price * 0.998),
+                "c": str(price),
+                "v": str(volume)
             })
         return candles
     
@@ -119,18 +119,17 @@ def test_scan_handles_api_failure(mock_config, mock_hl_client):
     scanner = AltScanner(mock_config, mock_hl_client)
     
     # Make candles_snapshot fail for DOGE but work for others
-    def failing_candles(coin, interval, limit):
+    def failing_candles(coin, interval, startTime, endTime):
         if coin == "DOGE":
             raise Exception("API failure")
-        # Return normal data for other coins
         base = 1.0
         candles = []
         for i in range(24):
             price = base * (1 + i * 0.001)
             candles.append({
-                "open": str(price), "high": str(price), 
-                "low": str(price), "close": str(price),
-                "volume": "1000"
+                "o": str(price), "h": str(price), 
+                "l": str(price), "c": str(price),
+                "v": "1000"
             })
         return candles
     
@@ -179,13 +178,13 @@ def test_volume_ratio_zero_mean_handled(mock_config, mock_hl_client):
     scanner = AltScanner(mock_config, mock_hl_client)
     
     # Mock candles with zero volume to create zero mean
-    def zero_volume_candles(coin, interval, limit):
+    def zero_volume_candles(coin, interval, startTime, endTime):
         candles = []
         for i in range(24):
             candles.append({
-                "open": "1.0", "high": "1.0", 
-                "low": "1.0", "close": "1.0",
-                "volume": "0"  # Zero volume
+                "o": "1.0", "h": "1.0", 
+                "l": "1.0", "c": "1.0",
+                "v": "0"
             })
         return candles
     
@@ -205,16 +204,15 @@ def test_insufficient_candle_data_skipped(mock_config, mock_hl_client, caplog):
     scanner = AltScanner(mock_config, mock_hl_client)
     
     # Mock candles_snapshot to return insufficient data for DOGE
-    def insufficient_candles(coin, interval, limit):
+    def insufficient_candles(coin, interval, startTime, endTime):
         if coin == "DOGE":
-            return [{"open": "1", "high": "1", "low": "1", "close": "1", "volume": "1000"}]  # Only 1 candle
-        # Return normal data for other coins
+            return [{"o": "1", "h": "1", "l": "1", "c": "1", "v": "1000"}]
         candles = []
         for i in range(24):
             candles.append({
-                "open": "1.0", "high": "1.0", 
-                "low": "1.0", "close": "1.0",
-                "volume": "1000"
+                "o": "1.0", "h": "1.0", 
+                "l": "1.0", "c": "1.0",
+                "v": "1000"
             })
         return candles
     

@@ -35,7 +35,7 @@ def mock_hl_client():
     client = Mock()
     client.all_mids.return_value = {"DOGE": 0.1, "LINK": 15.0, "AVAX": 25.0}
     client.candles_snapshot.return_value = [
-        {"open": 100, "high": 105, "low": 95, "close": 102, "volume": 1000}
+        {"o": "100", "h": "105", "l": "95", "c": "102", "v": "1000"}
         for _ in range(24)
     ]
     client.info = Mock()
