@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nxfh01"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas",
+    "numpy",
+    "httpx",
+    "python-dotenv",
+    "supabase",
+    "asyncpg",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+nxfh01 = "nxfh01.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "src"]
+pythonpath = ["src"]
+markers = [
+    "live: marks tests that call real Hyperliquid mainnet API (run deliberately)",
+]

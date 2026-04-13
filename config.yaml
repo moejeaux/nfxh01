@@ -1,0 +1,56 @@
+# Numeric thresholds for strategy directives — do not hardcode these in code paths.
+engines:
+  planned_count: 5
+  acevault_engine_id: 1
+  acevault:
+    loss_pct: 0.03
+    cooldown_hours: 4
+  growi:
+    loss_pct: 0.04
+    cooldown_hours: 6
+  mc:
+    loss_pct: 0.02
+    cooldown_hours: 2
+  anticze:
+    loss_pct: 0.02
+    cooldown_hours: 8
+  eternal:
+    loss_pct: 0.02
+    cooldown_hours: 12
+
+acevault:
+  # Fixed distance from entry to stop (percent). Immutable after position creation; risk layer rejects widening.
+  stop_loss_distance_pct: 0.3
+  max_candidates: 5
+  min_weakness_score: 0.3
+  max_concurrent_positions: 5
+  max_hold_minutes: 240
+  cycle_interval_seconds: 30
+  verification_size_usd: 50
+  regime_weights:
+    trending_up: 0.4
+    trending_down: 0.9
+    ranging: 0.6
+    risk_off: 1.0
+
+fathom:
+  model: fathom-r1-14b
+  timeout_seconds: 15
+  acevault_max_mult: 1.5
+  majors_max_mult: 2.0
+  enabled: true
+
+regime:
+  btc_1h_risk_off_threshold: -0.02
+  btc_vol_risk_off_threshold: 0.008
+  btc_4h_trend_threshold: 0.015
+  btc_vol_trend_threshold: 0.006
+  min_transition_interval_minutes: 15
+  data_fetch_interval_seconds: 60
+
+risk:
+  # UnifiedRiskLayer is mandatory before any order reaches execution; no bypass flags.
+  total_capital_usd: 10000
+  max_portfolio_drawdown_24h: 0.05
+  max_gross_multiplier: 3.0
+  max_correlated_longs: 3
