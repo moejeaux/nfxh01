@@ -11,6 +11,8 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from src.acp.degen_claw import DegenClawAcp
+from src.engines.acevault.degen_adapter import DegenExecutorAdapter
 from src.engines.acevault.engine import AceVaultEngine
 from src.regime.detector import RegimeDetector
 from src.risk.engine_killswitch import KillSwitch
@@ -43,7 +45,8 @@ def build_context() -> dict:
 
     regime_detector = RegimeDetector(config, data_fetcher=None)
 
-    degen_executor = None
+    acp = DegenClawAcp()
+    degen_executor = DegenExecutorAdapter(acp)
 
     acevault_engine = AceVaultEngine(
         config, hl_client, regime_detector, risk_layer, degen_executor, kill_switch
