@@ -35,6 +35,7 @@ acevault:
     risk_off: 1.0
 
 fathom:
+  enabled: true
   model: fathom-r1-14b
   timeout_seconds: 15
   acevault_max_mult: 1.5
