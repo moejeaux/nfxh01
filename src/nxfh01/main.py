@@ -36,6 +36,28 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+async def init_hl_client() -> Info:
+    for attempt in range(5):
+        try:
+            client = Info(base_url="https://api.hyperliquid.xyz", skip_ws=True)
+            logger.info("HL_CLIENT_INITIALIZED attempt=%d", attempt + 1)
+            return client
+        except Exception as e:
+            if "429" in str(e):
+                wait = (attempt + 1) * 15
+                logger.warning(
+                    "HL_CLIENT_RATE_LIMITED attempt=%d waiting=%ds",
+                    attempt + 1,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+            else:
+                logger.error("HL_CLIENT_INIT_ERROR error=%s", e)
+                raise
+    logger.error("HL_CLIENT_INIT_FAILED after 5 attempts")
+    sys.exit(1)
+
+
 async def build_context(config: dict) -> dict:
     # 1. Kill switch
     kill_switch = KillSwitch(config)
@@ -51,11 +73,8 @@ async def build_context(config: dict) -> dict:
         int(config["risk"]["max_gross_exposure_multiplier"] * 100),
     )
 
-    # 4. Hyperliquid client
-    hl_client = Info(
-        constants.MAINNET_API_URL,
-        skip_ws=True,
-    )
+    # 4. Hyperliquid client (with 429 retry)
+    hl_client = await init_hl_client()
 
     # 5. Regime detector
     regime_detector = RegimeDetector(config, data_fetcher=None)
@@ -69,7 +88,10 @@ async def build_context(config: dict) -> dict:
             await journal.connect()
             logger.info("DECISION_JOURNAL_CONNECTED")
         except Exception as e:
-            logger.warning("DECISION_JOURNAL_CONNECT_FAILED error=%s — continuing without journal", e)
+            logger.warning(
+                "DECISION_JOURNAL_CONNECT_FAILED error=%s — continuing without journal",
+                e,
+            )
             journal = None
     else:
         logger.warning("DECISION_JOURNAL_DISABLED DATABASE_URL not set")
@@ -86,7 +108,10 @@ async def build_context(config: dict) -> dict:
                 ollama_url,
             )
         except Exception as e:
-            logger.warning("FATHOM_ADVISOR_INIT_FAILED error=%s — continuing without Fathom", e)
+            logger.warning(
+                "FATHOM_ADVISOR_INIT_FAILED error=%s — continuing without Fathom",
+                e,
+            )
             fathom_advisor = None
     else:
         logger.info("FATHOM_ADVISOR_DISABLED enabled=false in config")
@@ -130,14 +155,15 @@ async def main() -> None:
     cycle_interval = config["acevault"]["cycle_interval_seconds"]
 
     # Detect initial regime for startup log
-    from src.regime.models import RegimeType
     initial_market_data = {
         "btc_1h_return": 0.0,
         "btc_4h_return": 0.0,
         "btc_vol_1h": 0.004,
     }
     initial_regime = ctx["regime_detector"].detect(market_data=initial_market_data)
-    weight = config["acevault"]["regime_weights"][initial_regime.regime.value.lower()]
+    weight = config["acevault"]["regime_weights"][
+        initial_regime.regime.value.lower()
+    ]
 
     logger.info(
         "REGIME_DETECTED regime=%s confidence=%.2f",
@@ -168,7 +194,7 @@ async def main() -> None:
     while not shutdown_event.is_set():
         try:
             results = await acevault_engine.run_cycle()
-            logger.info("NXFH01_CYCLE_COMPLETE results=%s", results)
+            logger.info("NXFH01_CYCLE_COMPLETE results=%d", len(results))
         except Exception as e:
             logger.error("NXFH01_CYCLE_ERROR error=%s", e, exc_info=True)
 
