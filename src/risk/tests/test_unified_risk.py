@@ -199,6 +199,52 @@ class TestCheckPrecedence:
         assert result.reason == "portfolio_dd_breach"
 
 
+class TestInsufficientCapitalReject:
+    def test_insufficient_capital_blocks_entry(self, portfolio_state, kill_switch):
+        config = _make_config(total_capital_usd=100, max_gross_multiplier=1.0, min_available_capital_usd=10.50)
+        portfolio_state.register_position("a", _short_position("p1", size=90.0))
+        rl = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+        sig = FakeSignal(coin="X", side="short", position_size_usd=5)
+        result = rl.validate(sig, "acevault")
+        assert result.approved is False
+        assert result.reason == "insufficient_capital"
+
+    def test_capital_exactly_at_minimum_passes(self, portfolio_state, kill_switch):
+        config = _make_config(total_capital_usd=100, max_gross_multiplier=1.0, min_available_capital_usd=10.50)
+        portfolio_state.register_position("a", _short_position("p1", size=89.50))
+        rl = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+        sig = FakeSignal(coin="X", side="short", position_size_usd=10)
+        result = rl.validate(sig, "acevault")
+        assert result.approved is True
+
+    def test_capital_just_below_minimum_blocks(self, portfolio_state, kill_switch):
+        config = _make_config(total_capital_usd=100, max_gross_multiplier=1.0, min_available_capital_usd=10.50)
+        portfolio_state.register_position("a", _short_position("p1", size=89.51))
+        rl = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+        sig = FakeSignal(coin="X", side="short", position_size_usd=5)
+        result = rl.validate(sig, "acevault")
+        assert result.approved is False
+        assert result.reason == "insufficient_capital"
+
+    def test_zero_capital_blocks(self, portfolio_state, kill_switch):
+        config = _make_config(total_capital_usd=100, max_gross_multiplier=2.0, min_available_capital_usd=10.50)
+        portfolio_state.register_position("a", _short_position("p1", size=195.0))
+        rl = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+        sig = FakeSignal(coin="X", side="short", position_size_usd=2)
+        result = rl.validate(sig, "acevault")
+        assert result.approved is False
+        assert result.reason == "insufficient_capital"
+
+    def test_default_minimum_when_key_missing(self, portfolio_state, kill_switch):
+        config = _make_config(total_capital_usd=100, max_gross_multiplier=1.0)
+        portfolio_state.register_position("a", _short_position("p1", size=90.0))
+        rl = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+        sig = FakeSignal(coin="X", side="short", position_size_usd=5)
+        result = rl.validate(sig, "acevault")
+        assert result.approved is False
+        assert result.reason == "insufficient_capital"
+
+
 class TestCheckGlobalRules:
     def test_no_breaches(self, risk_layer):
         rules = risk_layer.check_global_rules()

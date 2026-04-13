@@ -55,3 +55,4 @@ risk:
   max_portfolio_drawdown_24h: 0.05
   max_gross_multiplier: 3.0
   max_correlated_longs: 3
+  min_available_capital_usd: 10.50
