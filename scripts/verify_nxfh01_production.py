@@ -8,7 +8,6 @@ import asyncio
 import logging
 import os
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.engines.acevault.engine import AceVaultEngine
 from src.engines.acevault.scanner import AltScanner
 from src.fathom.advisor import FathomAdvisor
+from src.market_data.hyperliquid_btc import fetch_real_market_data
 from src.regime.detector import RegimeDetector
 from src.risk.engine_killswitch import KillSwitch
 from src.risk.portfolio_state import PortfolioState
@@ -66,59 +66,6 @@ async def verify_fathom_connectivity(config: dict) -> tuple[bool, bool]:
             model_responding = False
     
     return ollama_reachable, model_responding
-
-
-async def fetch_real_market_data(hl_client: Info) -> dict:
-    """Fetch real BTC market data for regime detection."""
-    try:
-        # Get BTC candles for returns and volatility
-        now_ms = int(time.time() * 1000)
-        five_hours_ago_ms = now_ms - (5 * 60 * 60 * 1000)
-        candles = hl_client.candles_snapshot("BTC", "1h", five_hours_ago_ms, now_ms)
-        if len(candles) < 2:
-            raise ValueError("Insufficient BTC candle data")
-        
-        current_close = float(candles[-1]["c"])
-        prev_close = float(candles[-2]["c"])
-        btc_1h_return = (current_close - prev_close) / prev_close
-        
-        if len(candles) >= 5:
-            four_h_ago_close = float(candles[-5]["c"])
-            btc_4h_return = (current_close - four_h_ago_close) / four_h_ago_close
-        else:
-            btc_4h_return = btc_1h_return * 4
-        
-        prices = [float(c["c"]) for c in candles[-4:]]
-        returns = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices))]
-        btc_vol_1h = sum(abs(r) for r in returns) / len(returns) if returns else 0.004
-        
-        # Get funding rate (if available)
-        try:
-            meta = hl_client.meta()
-            funding_rate = 0.0
-            for universe_item in meta.get("universe", []):
-                if universe_item.get("name") == "BTC":
-                    funding_rate = float(universe_item.get("funding", "0")) * 100  # Convert to percentage
-                    break
-        except Exception:
-            funding_rate = 0.0
-        
-        return {
-            "btc_1h_return": btc_1h_return,
-            "btc_4h_return": btc_4h_return,
-            "btc_vol_1h": btc_vol_1h,
-            "funding_rate": funding_rate,
-        }
-    
-    except Exception as e:
-        logger.error("Failed to fetch real market data: %s", e)
-        # Return fallback data
-        return {
-            "btc_1h_return": 0.0,
-            "btc_4h_return": 0.0,
-            "btc_vol_1h": 0.004,
-            "funding_rate": 0.0,
-        }
 
 
 async def run_verification_cycle(config: dict, hl_client: Info) -> dict:

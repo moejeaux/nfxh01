@@ -36,13 +36,24 @@ acevault:
 
 fathom:
   enabled: true
+  # Per-exit post-trade blurbs (3b); six-hour strategy review uses fathom_retrospective.deep_model (14b).
   model: llama3.2:3b
   fast_model: llama3.2:3b
   post_analysis_timeout_seconds: 180
   timeout_seconds: 30
   acevault_max_mult: 1.5
   majors_max_mult: 2.0
+
+fathom_retrospective:
   enabled: true
+  deep_model: fathom-r1-14b
+  lookback_hours: 6
+  max_decision_rows: 200
+  max_decisions_prompt_chars: 12000
+  timeout_seconds: 600
+  num_predict: 2048
+  temperature: 0.2
+  previous_runs_in_prompt: 1
 
 regime:
   btc_1h_risk_off_threshold: -0.02

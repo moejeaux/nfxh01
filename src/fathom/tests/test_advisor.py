@@ -13,7 +13,8 @@ from src.regime.models import RegimeState, RegimeType
 def mock_config():
     return {
         "fathom": {
-            "model": "fathom-r1-14b",
+            "model": "llama3.2:3b",
+            "fast_model": "llama3.2:3b",
             "timeout_seconds": 15,
             "acevault_max_mult": 1.5,
         }
@@ -122,7 +123,7 @@ def test_prompt_includes_regime(advisor, sample_signal, sample_regime_state):
     prompt = advisor._build_acevault_prompt(sample_signal, sample_regime_state, "prior context")
 
     assert "trending_down" in prompt
-    assert "confidence: 0.85" in prompt
+    assert "confidence=0.85" in prompt
 
 
 def test_prompt_includes_prior_context(advisor, sample_signal, sample_regime_state):

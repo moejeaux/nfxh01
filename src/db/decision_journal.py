@@ -2,6 +2,7 @@ import asyncpg
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID
 
 from src.engines.acevault.models import AceSignal
 from src.engines.acevault.exit import AceExit
@@ -138,11 +139,11 @@ class DecisionJournal:
             SUM(pnl_usd) as total_pnl_usd
         FROM acevault_decisions 
         WHERE outcome_recorded_at IS NOT NULL 
-        AND created_at >= NOW() - INTERVAL '%d hours'
-        """ % window_hours
+        AND created_at >= NOW() - ($1::integer * INTERVAL '1 hour')
+        """
 
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(query)
+            row = await conn.fetchrow(query, window_hours)
 
         total_trades = row["total_trades"] or 0
         winning_trades = row["winning_trades"] or 0
@@ -181,6 +182,113 @@ class DecisionJournal:
                 decision_id,
             )
         logger.info("DECISION_JOURNAL_POST_ANALYSIS_LOGGED decision_id=%s", decision_id)
+
+    async def fetch_decisions_in_window(
+        self,
+        window_start: datetime,
+        window_end: datetime,
+        max_rows: int,
+    ) -> list[dict[str, Any]]:
+        """Return decisions with created_at in [window_start, window_end), newest first, capped."""
+        if self._pool is None:
+            raise RuntimeError("DecisionJournal not connected - call connect() first")
+
+        query = """
+        SELECT id, created_at, coin, decision_type, regime, weakness_score,
+               entry_price, stop_loss_price, take_profit_price, position_size_usd,
+               fathom_override, fathom_size_mult, fathom_reasoning,
+               exit_price, exit_reason, pnl_usd, pnl_pct, hold_duration_seconds,
+               outcome_recorded_at, regime_at_close
+        FROM acevault_decisions
+        WHERE created_at >= $1 AND created_at < $2
+        ORDER BY created_at DESC
+        LIMIT $3
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, window_start, window_end, max_rows)
+
+        out = [dict(row) for row in rows]
+        logger.info(
+            "DECISION_JOURNAL_WINDOW_FETCHED start=%s end=%s count=%d max_rows=%d",
+            window_start.isoformat(),
+            window_end.isoformat(),
+            len(out),
+            max_rows,
+        )
+        return out
+
+    async def insert_retrospective_run(
+        self,
+        *,
+        window_start: datetime,
+        window_end: datetime,
+        market_snapshot: dict[str, Any],
+        decisions_digest: dict[str, Any] | None,
+        analysis_text: str,
+        analysis_json: dict[str, Any] | None,
+        previous_run_id: str | None,
+        model_used: str,
+    ) -> str:
+        """Insert one fathom_retrospective_runs row; return new id as string."""
+        if self._pool is None:
+            raise RuntimeError("DecisionJournal not connected - call connect() first")
+
+        prev_uuid: UUID | None = None
+        if previous_run_id:
+            try:
+                prev_uuid = UUID(previous_run_id)
+            except ValueError:
+                prev_uuid = None
+
+        query = """
+        INSERT INTO fathom_retrospective_runs (
+            window_start, window_end, market_snapshot, decisions_digest,
+            analysis_text, analysis_json, previous_run_id, model_used
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id
+        """
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query,
+                window_start,
+                window_end,
+                market_snapshot,
+                decisions_digest,
+                analysis_text,
+                analysis_json,
+                prev_uuid,
+                model_used,
+            )
+
+        new_id = str(row["id"])
+        logger.info(
+            "DECISION_JOURNAL_RETROSPECTIVE_INSERTED id=%s window_start=%s window_end=%s",
+            new_id,
+            window_start.isoformat(),
+            window_end.isoformat(),
+        )
+        return new_id
+
+    async def get_recent_retrospectives(self, limit: int) -> list[dict[str, Any]]:
+        """Most recent retrospective rows for continuity prompts."""
+        if self._pool is None:
+            raise RuntimeError("DecisionJournal not connected - call connect() first")
+
+        query = """
+        SELECT id, created_at, window_start, window_end, market_snapshot,
+               decisions_digest, analysis_text, analysis_json, previous_run_id, model_used
+        FROM fathom_retrospective_runs
+        ORDER BY created_at DESC
+        LIMIT $1
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, limit)
+
+        out = [dict(row) for row in rows]
+        logger.info("DECISION_JOURNAL_RETROSPECTIVES_FETCHED count=%d limit=%d", len(out), limit)
+        return out
 
     async def close(self) -> None:
         """Close the connection pool."""

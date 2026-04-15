@@ -111,8 +111,8 @@ async def test_log_entry_with_fathom_result(decision_journal, mock_asyncpg_pool,
     conn.fetchrow.return_value = {"id": test_uuid}
     
     fathom_result = {
-        "size_multiplier": 1.3,
-        "reasoning": "High momentum detected"
+        "size_mult": 1.3,
+        "reasoning": "High momentum detected",
     }
     
     await decision_journal.log_entry(sample_signal, fathom_result)

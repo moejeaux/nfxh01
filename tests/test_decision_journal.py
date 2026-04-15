@@ -121,8 +121,8 @@ async def test_log_entry_with_fathom(decision_journal, mock_pool, sample_signal)
     conn.fetchrow.return_value = {"id": test_uuid}
     
     fathom_result = {
-        "size_multiplier": 1.3,
-        "reasoning": "High momentum detected"
+        "size_mult": 1.3,
+        "reasoning": "High momentum detected",
     }
     
     result = await decision_journal.log_entry(sample_signal, fathom_result)
@@ -264,6 +264,7 @@ async def test_get_engine_stats_with_trades(decision_journal, mock_pool):
     assert result["total_pnl_usd"] == 150.0
     
     conn.fetchrow.assert_called_once()
+    assert conn.fetchrow.call_args[0][1] == 168
 
 
 @pytest.mark.asyncio
@@ -311,3 +312,87 @@ async def test_close_no_pool(decision_journal):
     """Test close when no pool exists."""
     # Should not raise error
     await decision_journal.close()
+
+
+@pytest.mark.asyncio
+async def test_fetch_decisions_in_window(decision_journal, mock_pool):
+    pool, conn = mock_pool
+    decision_journal._pool = pool
+    uid = uuid4()
+    conn.fetch.return_value = [
+        {
+            "id": uid,
+            "created_at": datetime.now(timezone.utc),
+            "coin": "BTC",
+            "decision_type": "entry",
+            "regime": "ranging",
+            "weakness_score": 0.5,
+            "entry_price": 1.0,
+            "stop_loss_price": 2.0,
+            "take_profit_price": 0.5,
+            "position_size_usd": 25.0,
+            "fathom_override": False,
+            "fathom_size_mult": None,
+            "fathom_reasoning": None,
+            "exit_price": None,
+            "exit_reason": None,
+            "pnl_usd": None,
+            "pnl_pct": None,
+            "hold_duration_seconds": None,
+            "outcome_recorded_at": None,
+            "regime_at_close": None,
+        }
+    ]
+    ws = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    we = datetime(2025, 1, 2, tzinfo=timezone.utc)
+    rows = await decision_journal.fetch_decisions_in_window(ws, we, 50)
+    assert len(rows) == 1
+    assert rows[0]["coin"] == "BTC"
+    call_args = conn.fetch.call_args[0]
+    assert call_args[1] == ws
+    assert call_args[2] == we
+    assert call_args[3] == 50
+
+
+@pytest.mark.asyncio
+async def test_insert_retrospective_run(decision_journal, mock_pool):
+    pool, conn = mock_pool
+    decision_journal._pool = pool
+    nid = uuid4()
+    conn.fetchrow.return_value = {"id": nid}
+    wid = await decision_journal.insert_retrospective_run(
+        window_start=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        window_end=datetime(2025, 1, 2, tzinfo=timezone.utc),
+        market_snapshot={"btc_1h_return": 0.0},
+        decisions_digest={"decision_count": 0},
+        analysis_text="{}",
+        analysis_json={"summary": "x"},
+        previous_run_id=None,
+        model_used="m",
+    )
+    assert wid == str(nid)
+    conn.fetchrow.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_recent_retrospectives(decision_journal, mock_pool):
+    pool, conn = mock_pool
+    decision_journal._pool = pool
+    rid = uuid4()
+    conn.fetch.return_value = [
+        {
+            "id": rid,
+            "created_at": datetime.now(timezone.utc),
+            "window_start": datetime.now(timezone.utc),
+            "window_end": datetime.now(timezone.utc),
+            "market_snapshot": {},
+            "decisions_digest": {},
+            "analysis_text": "t",
+            "analysis_json": None,
+            "previous_run_id": None,
+            "model_used": "m",
+        }
+    ]
+    rows = await decision_journal.get_recent_retrospectives(3)
+    assert len(rows) == 1
+    conn.fetch.assert_called_once()
