@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -372,6 +373,11 @@ async def test_insert_retrospective_run(decision_journal, mock_pool):
     )
     assert wid == str(nid)
     conn.fetchrow.assert_called_once()
+    bind = conn.fetchrow.call_args[0]
+    assert json.loads(bind[3]) == {"btc_1h_return": 0.0}
+    assert json.loads(bind[4]) == {"decision_count": 0}
+    assert bind[5] == "{}"
+    assert json.loads(bind[6]) == {"summary": "x"}
 
 
 @pytest.mark.asyncio

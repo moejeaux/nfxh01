@@ -1,4 +1,5 @@
 import asyncpg
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -245,19 +246,31 @@ class DecisionJournal:
             window_start, window_end, market_snapshot, decisions_digest,
             analysis_text, analysis_json, previous_run_id, model_used
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7, $8)
         RETURNING id
         """
+
+        snap_json = json.dumps(market_snapshot, ensure_ascii=False, default=str)
+        digest_json = (
+            json.dumps(decisions_digest, ensure_ascii=False, default=str)
+            if decisions_digest is not None
+            else None
+        )
+        analysis_json_str = (
+            json.dumps(analysis_json, ensure_ascii=False, default=str)
+            if analysis_json is not None
+            else None
+        )
 
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 query,
                 window_start,
                 window_end,
-                market_snapshot,
-                decisions_digest,
+                snap_json,
+                digest_json,
                 analysis_text,
-                analysis_json,
+                analysis_json_str,
                 prev_uuid,
                 model_used,
             )
