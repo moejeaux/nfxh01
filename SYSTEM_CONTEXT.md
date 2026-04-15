@@ -66,7 +66,29 @@ All numeric thresholds live here; never hardcode:
 
 ## Database
 - **Postgres via Supabase:** connection string in `DATABASE_URL` env var.
-- **asyncpg** for async queries; schema TBD in sprint.
+- **asyncpg** for async queries; schema in [`src/db/schema.sql`](src/db/schema.sql), migrations in [`src/db/migrations/`](src/db/migrations/).
+
+## Six-hour Fathom retrospective (not the main agent)
+
+The 14b window review runs as a **separate** process. Restarting the trading agent does **not** start this; schedule it or run it manually.
+
+**Config:** [`config.yaml`](config.yaml) → `fathom_retrospective` (`deep_model`, `lookback_hours`, `timeout_seconds`, etc.).
+
+**Manual run (from repo root, venv active):**
+```bash
+cd ~/projects/nfxh01   # adjust to your clone path
+source .venv/bin/activate
+python -m src.fathom.retrospective
+```
+Requires `DATABASE_URL` (and optionally `OLLAMA_BASE_URL`) in the environment—e.g. `export` after `source .env` if you use a dotenv file.
+
+**macOS cron (every six hours, example):** `crontab -e` and add one line. Replace `YOUR_USER`, repo path, venv path, and paste your real `DATABASE_URL` (cron does not load `.env` automatically).
+
+```cron
+0 */6 * * * cd /Users/YOUR_USER/projects/nfxh01 && /Users/YOUR_USER/projects/nfxh01/.venv/bin/python -m src.fathom.retrospective >> /Users/YOUR_USER/logs/fathom_retro.log 2>&1
+```
+
+If you prefer not to embed secrets in crontab, use a two-line wrapper script that `source`s `.env` then runs the same `python -m` command, and point cron at that script.
 
 ## Testing
 - **pytest** with `@pytest.mark.live` for real Hyperliquid mainnet tests.
