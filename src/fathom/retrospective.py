@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from hyperliquid.info import Info
 
 from src.db.decision_journal import DecisionJournal
 from src.market_data.hyperliquid_btc import fetch_real_market_data
+from src.notifications.telegram import TelegramBot
 from src.regime.detector import RegimeDetector
 
 logger = logging.getLogger(__name__)
@@ -149,6 +151,90 @@ Respond with a short prose section, then a FINAL JSON object only (no markdown f
 
 def _make_hl_client() -> Info:
     return Info(base_url="https://api.hyperliquid.xyz", skip_ws=True)
+
+
+def format_retrospective_telegram_message(
+    *,
+    run_id: str,
+    window_start: datetime,
+    window_end: datetime,
+    analysis_json: dict[str, Any] | None,
+    analysis_text: str,
+    max_chars: int,
+) -> str:
+    """Plain-text synopsis for Telegram; capped below Telegram 4096 limit."""
+    cap = min(int(max_chars), 4096)
+    header = (
+        f"Fathom 6h retrospective\n"
+        f"run_id: {run_id}\n"
+        f"window_utc: {window_start.isoformat()} .. {window_end.isoformat()}\n"
+    )
+    body_parts: list[str] = []
+
+    if analysis_json:
+        if analysis_json.get("summary"):
+            body_parts.append("Summary:\n" + str(analysis_json["summary"]))
+        for label, key in (
+            ("Market factors", "market_factors"),
+            ("Recommended changes", "recommended_changes"),
+            ("Carry over", "carry_over"),
+        ):
+            val = analysis_json.get(key)
+            if val:
+                if isinstance(val, list):
+                    lines = "\n".join(f"  - {x}" for x in val[:30])
+                    body_parts.append(f"{label}:\n{lines}")
+                else:
+                    body_parts.append(f"{label}:\n  {val}")
+    else:
+        snippet = (analysis_text or "")[: max(0, cap - len(header) - 80)]
+        body_parts.append("Summary: (JSON parse failed; excerpt below)\n" + snippet)
+
+    text = header + "\n" + "\n\n".join(body_parts)
+    if len(text) > cap:
+        text = text[: cap - 3] + "..."
+    return text
+
+
+async def _maybe_send_telegram_retrospective(
+    fr: dict[str, Any],
+    *,
+    run_id: str,
+    window_start: datetime,
+    window_end: datetime,
+    analysis_json: dict[str, Any] | None,
+    analysis_text: str,
+) -> None:
+    """Notify Telegram if enabled; failures are logged only (exit code unchanged)."""
+    if not fr.get("telegram_notify", False):
+        logger.info("%s_TELEGRAM_SKIPPED reason=config_disabled", _RETRO_LOG)
+        return
+
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    if not token or not chat_id:
+        logger.info("%s_TELEGRAM_SKIPPED reason=missing_credentials", _RETRO_LOG)
+        return
+
+    max_chars = int(fr.get("telegram_message_max_chars", 3500))
+    msg = format_retrospective_telegram_message(
+        run_id=run_id,
+        window_start=window_start,
+        window_end=window_end,
+        analysis_json=analysis_json,
+        analysis_text=analysis_text,
+        max_chars=max_chars,
+    )
+
+    bot = TelegramBot(token, chat_id)
+    try:
+        ok = await asyncio.to_thread(bot.notify, msg)
+        if ok:
+            logger.info("%s_TELEGRAM_SENT ok=true", _RETRO_LOG)
+        else:
+            logger.warning("%s_TELEGRAM_FAILED ok=false", _RETRO_LOG)
+    except Exception as e:
+        logger.warning("%s_TELEGRAM_FAILED error=%s", _RETRO_LOG, e)
 
 
 async def run_six_hour_retrospective(
@@ -287,6 +373,16 @@ async def run_six_hour_retrospective(
             new_id,
             "yes" if analysis_json else "no",
         )
+
+        await _maybe_send_telegram_retrospective(
+            fr,
+            run_id=new_id,
+            window_start=window_start,
+            window_end=window_end,
+            analysis_json=analysis_json,
+            analysis_text=raw_text,
+        )
+
         return 0
     finally:
         await journal.close()
@@ -298,8 +394,6 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-
-    import os
 
     db_url = os.getenv("DATABASE_URL")
     if not db_url:

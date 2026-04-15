@@ -74,6 +74,8 @@ The 14b window review runs as a **separate** process. Restarting the trading age
 
 **Config:** [`config.yaml`](config.yaml) → `fathom_retrospective` (`deep_model`, `lookback_hours`, `timeout_seconds`, etc.).
 
+**Optional Telegram synopsis:** set `fathom_retrospective.telegram_notify: true` and provide `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the environment (same as any other bot usage). After each successful run, a short message (summary + bullets + `run_id`) is sent; failures to send do not fail the job.
+
 **Manual run (from repo root, venv active):**
 ```bash
 cd ~/projects/nfxh01   # adjust to your clone path

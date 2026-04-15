@@ -54,6 +54,9 @@ fathom_retrospective:
   num_predict: 2048
   temperature: 0.2
   previous_runs_in_prompt: 1
+  # Optional: push synopsis to Telegram after each successful run (requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in env).
+  telegram_notify: false
+  telegram_message_max_chars: 3500
 
 regime:
   btc_1h_risk_off_threshold: -0.02
