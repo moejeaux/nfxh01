@@ -7,6 +7,7 @@ from uuid import UUID
 
 from src.engines.acevault.models import AceSignal
 from src.engines.acevault.exit import AceExit
+from src.nxfh01.orchestration.types import NormalizedEntryIntent
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,64 @@ class DecisionJournal:
             fathom_override,
         )
         return decision_id
+
+    async def log_track_a_entry(
+        self,
+        *,
+        position_id: str,
+        intent: NormalizedEntryIntent,
+        entry_price: float,
+        job_id: str | None,
+        idempotency_key: str,
+        leverage_used: int,
+    ) -> str:
+        """Persist a Track A entry decision; ``position_id`` aligns with ``PortfolioState`` registration."""
+        if self._pool is None:
+            raise RuntimeError("DecisionJournal not connected - call connect() first")
+
+        meta = dict(intent.metadata or {})
+        meta["position_id"] = position_id
+
+        query = """
+        INSERT INTO strategy_decisions (
+            id, strategy_key, engine_id, coin, side, decision_type,
+            position_size_usd, entry_price, stop_loss_price, take_profit_price,
+            leverage, job_id, idempotency_key, metadata
+        ) VALUES (
+            $1::uuid, $2, $3, $4, $5, 'entry',
+            $6, $7, $8, $9, $10, $11, $12, $13::jsonb
+        )
+        RETURNING id
+        """
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query,
+                position_id,
+                intent.strategy_key,
+                intent.engine_id,
+                intent.coin.strip(),
+                intent.side,
+                float(intent.position_size_usd),
+                float(entry_price),
+                intent.stop_loss_price,
+                intent.take_profit_price,
+                max(1, int(leverage_used)),
+                job_id,
+                idempotency_key,
+                json.dumps(meta, ensure_ascii=False, default=str),
+            )
+
+        rid = str(row["id"])
+        logger.info(
+            "DECISION_JOURNAL_TRACK_A_ENTRY id=%s coin=%s engine_id=%s strategy_key=%s job_id=%s",
+            rid,
+            intent.coin,
+            intent.engine_id,
+            intent.strategy_key,
+            job_id,
+        )
+        return rid
 
     async def log_exit(
         self, decision_id: str, exit: AceExit, regime_at_close: str

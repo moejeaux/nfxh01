@@ -402,3 +402,33 @@ async def test_get_recent_retrospectives(decision_journal, mock_pool):
     rows = await decision_journal.get_recent_retrospectives(3)
     assert len(rows) == 1
     conn.fetch.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_log_track_a_entry(decision_journal, mock_pool):
+    from src.nxfh01.orchestration.types import NormalizedEntryIntent
+
+    pool, conn = mock_pool
+    decision_journal._pool = pool
+    rid = uuid4()
+    conn.fetchrow.return_value = {"id": rid}
+
+    intent = NormalizedEntryIntent(
+        engine_id="growi",
+        strategy_key="growi_hf",
+        coin="ETH",
+        side="long",
+        position_size_usd=100.0,
+        stop_loss_price=1.0,
+        take_profit_price=2.0,
+    )
+    out = await decision_journal.log_track_a_entry(
+        position_id=str(rid),
+        intent=intent,
+        entry_price=2500.0,
+        job_id="job99",
+        idempotency_key="idem-1",
+        leverage_used=2,
+    )
+    assert out == str(rid)
+    conn.fetchrow.assert_called_once()

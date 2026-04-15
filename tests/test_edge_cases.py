@@ -246,6 +246,20 @@ class TestStartupPositionRecovery:
         recovered_positions = portfolio.get_open_positions("recovered")
         assert len(recovered_positions) == 0
 
+    def test_reconcile_warns_when_memory_not_on_venue(self, mock_hl_client, caplog):
+        caplog.set_level(logging.WARNING)
+        portfolio = PortfolioState()
+        pos = Mock()
+        pos.position_id = "pos-1"
+        pos.signal.coin = "ETH"
+        pos.signal.side = "long"
+        pos.signal.position_size_usd = 100.0
+        portfolio.register_position("growi", pos)
+        mock_hl_client.info.user_state.return_value = {"assetPositions": []}
+        portfolio.reconcile_open_positions_vs_hl(mock_hl_client, "0xabc")
+        assert "RISK_RECONCILE_MEMORY_NOT_ON_VENUE" in caplog.text
+        assert "ETH" in caplog.text
+
 
 class TestKillswitchStopsEntriesNotExits:
     @pytest.mark.asyncio

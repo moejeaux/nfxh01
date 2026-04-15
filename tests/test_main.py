@@ -1,13 +1,17 @@
 import asyncio
 import logging
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
 
+from datetime import datetime, timezone
+
 from src.main import VERSION, _log_startup_sequence, build_context
+from src.nxfh01.orchestration.strategy_registry import StrategyRegistry
+from src.nxfh01.orchestration.strategy_orchestrator import StrategyOrchestrator
+from src.nxfh01.orchestration.types import OrchestratorTickSummary, StrategyTickResult
 
 
 @pytest.fixture
@@ -16,6 +20,8 @@ def base_config():
         "engines": {
             "planned_count": 5,
             "acevault": {"loss_pct": 0.03, "cooldown_hours": 4},
+            "growi": {"loss_pct": 0.04, "cooldown_hours": 6},
+            "mc": {"loss_pct": 0.02, "cooldown_hours": 2},
         },
         "acevault": {
             "stop_loss_distance_pct": 0.3,
@@ -47,6 +53,20 @@ def base_config():
             "max_portfolio_drawdown_24h": 0.05,
             "max_gross_multiplier": 3.0,
             "max_correlated_longs": 3,
+            "min_available_capital_usd": 10.50,
+        },
+        "orchestration": {
+            "tick_interval_seconds": 30,
+            "execution_order": ["acevault", "growi_hf", "mc_recovery"],
+            "conflict": {
+                "mode": "skip_opposing",
+                "priority": ["acevault", "growi_hf", "mc_recovery"],
+            },
+        },
+        "strategies": {
+            "acevault": {"enabled": True, "engine_id": "acevault"},
+            "growi_hf": {"enabled": False, "engine_id": "growi"},
+            "mc_recovery": {"enabled": False, "engine_id": "mc"},
         },
     }
 
@@ -82,6 +102,16 @@ def ctx(base_config):
             base_config, hl_client, regime_detector, risk_layer, None
         )
 
+    tick_iv = float(
+        (base_config.get("orchestration") or {}).get("tick_interval_seconds")
+        or base_config["acevault"]["cycle_interval_seconds"]
+    )
+    reg = StrategyRegistry(base_config)
+    orch = StrategyOrchestrator(
+        base_config,
+        reg,
+        {"acevault": acevault_engine.run_cycle, "growi_hf": AsyncMock(return_value=[]), "mc_recovery": AsyncMock(return_value=[])},
+    )
     return {
         "config": base_config,
         "kill_switch": kill_switch,
@@ -90,64 +120,43 @@ def ctx(base_config):
         "hl_client": hl_client,
         "regime_detector": regime_detector,
         "acevault_engine": acevault_engine,
+        "orchestrator": orch,
+        "tick_interval_seconds": tick_iv,
     }
 
 
 class TestBuildContext:
-    def test_returns_all_required_keys(self, config_yaml_path):
+    @pytest.mark.asyncio
+    async def test_returns_all_required_keys(self, config_yaml_path):
+        cfg = yaml.safe_load(config_yaml_path.read_text(encoding="utf-8"))
         with (
-            patch.dict(os.environ, {"HL_WALLET_ADDRESS": "0xabc123"}),
-            patch("src.main.load_dotenv"),
-            patch("src.main.Path") as mock_path_cls,
+            patch("src.nxfh01.runtime.init_hl_client", new_callable=AsyncMock) as mock_hl,
             patch("src.engines.acevault.engine.AltScanner"),
             patch("src.engines.acevault.engine.EntryManager"),
             patch("src.engines.acevault.engine.ExitManager"),
         ):
-            mock_path_cls.return_value.resolve.return_value.parents.__getitem__ = (
-                lambda s, i: config_yaml_path.parent
-            )
-
-            with patch("src.main.yaml.safe_load") as mock_yaml:
-                mock_yaml.return_value = yaml.safe_load(
-                    config_yaml_path.read_text(encoding="utf-8")
-                )
-                with patch("hyperliquid.info.Info"):
-                    ctx = build_context()
+            mock_hl.return_value = MagicMock()
+            ctx = await build_context(cfg)
 
             expected_keys = {
-                "config",
-                "kill_switch",
-                "portfolio_state",
-                "risk_layer",
-                "hl_client",
-                "regime_detector",
-                "acevault_engine",
-            }
-            assert set(ctx.keys()) == expected_keys
-
-    def test_raises_without_wallet_address(self, config_yaml_path):
-        with (
-            patch.dict(os.environ, {"HL_WALLET_ADDRESS": ""}, clear=False),
-            patch("src.main.load_dotenv"),
-            patch("src.main.yaml.safe_load") as mock_yaml,
-        ):
-            mock_yaml.return_value = yaml.safe_load(
-                config_yaml_path.read_text(encoding="utf-8")
-            )
-            with pytest.raises(RuntimeError, match="HL_WALLET_ADDRESS"):
-                build_context()
-
-    def test_raises_when_wallet_address_env_absent(self, config_yaml_path, monkeypatch):
-        monkeypatch.delenv("HL_WALLET_ADDRESS", raising=False)
-        with (
-            patch("src.main.load_dotenv"),
-            patch("src.main.yaml.safe_load") as mock_yaml,
-        ):
-            mock_yaml.return_value = yaml.safe_load(
-                config_yaml_path.read_text(encoding="utf-8")
-            )
-            with pytest.raises(RuntimeError, match="HL_WALLET_ADDRESS"):
-                build_context()
+            "config",
+            "kill_switch",
+            "portfolio_state",
+            "risk_layer",
+            "hl_client",
+            "regime_detector",
+            "journal",
+            "fathom_advisor",
+            "degen_executor",
+            "acevault_engine",
+            "growi_hf_engine",
+            "mc_recovery_engine",
+            "strategy_registry",
+            "orchestrator",
+            "track_a_executor",
+            "tick_interval_seconds",
+        }
+        assert set(ctx.keys()) == expected_keys
 
 
 class TestBuildContextInitOrder:
@@ -175,7 +184,11 @@ class TestStartupLogSequence:
         with caplog.at_level(logging.INFO):
             _log_startup_sequence(ctx)
 
-        messages = [r.message for r in caplog.records]
+        messages = [
+            r.message
+            for r in caplog.records
+            if r.name == "src.nxfh01.runtime"
+        ]
         expected_prefixes = [
             "NXFH01_STARTING",
             "RISK_LAYER_INITIALIZED",
@@ -244,6 +257,7 @@ class TestStartupLogSequence:
 
     def test_cycles_per_minute_with_different_interval(self, ctx, caplog):
         ctx["config"]["acevault"]["cycle_interval_seconds"] = 60
+        ctx["tick_interval_seconds"] = 60.0
         with caplog.at_level(logging.INFO):
             _log_startup_sequence(ctx)
 
@@ -251,23 +265,39 @@ class TestStartupLogSequence:
         assert "cycles_per_minute=1.0" in ready_msgs[0]
 
 
+def _fake_summary(raw_events: int = 0) -> OrchestratorTickSummary:
+    return OrchestratorTickSummary(
+        tick_at=datetime.now(timezone.utc),
+        strategy_results=[
+            StrategyTickResult(
+                "acevault",
+                "acevault",
+                True,
+                None,
+                raw_events,
+                None,
+            ),
+        ],
+        normalized_intents_produced=0,
+        intents_after_conflict=0,
+        tick_duration_ms=1.0,
+    )
+
+
 class TestMainLoop:
     @pytest.mark.asyncio
     async def test_runs_cycle_and_logs_complete(self, ctx, caplog):
-        engine = ctx["acevault_engine"]
-        engine.run_cycle = AsyncMock(return_value=[])
-
         call_count = 0
         shutdown = asyncio.Event()
 
-        async def counting_run_cycle():
+        async def counting_tick():
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
                 shutdown.set()
-            return []
+            return _fake_summary(0)
 
-        engine.run_cycle = counting_run_cycle
+        ctx["orchestrator"].run_tick = counting_tick
 
         with caplog.at_level(logging.INFO):
             await _run_main_loop(ctx, shutdown, cycle_interval=0.01)
@@ -277,8 +307,7 @@ class TestMainLoop:
 
     @pytest.mark.asyncio
     async def test_logs_shutdown_complete(self, ctx, caplog):
-        engine = ctx["acevault_engine"]
-        engine.run_cycle = AsyncMock(return_value=[])
+        ctx["orchestrator"].run_tick = AsyncMock(return_value=_fake_summary(0))
 
         shutdown = asyncio.Event()
         shutdown.set()
@@ -293,7 +322,6 @@ class TestMainLoop:
 
     @pytest.mark.asyncio
     async def test_cycle_error_does_not_crash_loop(self, ctx, caplog):
-        engine = ctx["acevault_engine"]
         call_count = 0
         shutdown = asyncio.Event()
 
@@ -303,9 +331,9 @@ class TestMainLoop:
             if call_count == 1:
                 raise ValueError("test explosion")
             shutdown.set()
-            return []
+            return _fake_summary(0)
 
-        engine.run_cycle = failing_then_ok
+        ctx["orchestrator"].run_tick = failing_then_ok
 
         with caplog.at_level(logging.INFO):
             await _run_main_loop(ctx, shutdown, cycle_interval=0.01)
@@ -316,29 +344,24 @@ class TestMainLoop:
 
     @pytest.mark.asyncio
     async def test_cycle_results_logged(self, ctx, caplog):
-        engine = ctx["acevault_engine"]
-        engine.run_cycle = AsyncMock(return_value=["signal_a", "exit_b"])
-
         shutdown = asyncio.Event()
         call_count = 0
-
-        original = engine.run_cycle
 
         async def one_then_stop():
             nonlocal call_count
             call_count += 1
             if call_count >= 1:
                 shutdown.set()
-            return await original()
+            return _fake_summary(2)
 
-        engine.run_cycle = one_then_stop
+        ctx["orchestrator"].run_tick = one_then_stop
 
         with caplog.at_level(logging.INFO):
             await _run_main_loop(ctx, shutdown, cycle_interval=0.01)
 
         cycle_msgs = [r.message for r in caplog.records if "NXFH01_CYCLE_COMPLETE" in r.message]
         assert len(cycle_msgs) >= 1
-        assert "signal_a" in cycle_msgs[0]
+        assert "raw_events=2" in cycle_msgs[0]
 
 
 class TestConfigLoading:
@@ -372,12 +395,21 @@ async def _run_main_loop(
     shutdown_event: asyncio.Event,
     cycle_interval: float = 0.01,
 ) -> None:
-    engine = ctx["acevault_engine"]
+    orchestrator = ctx["orchestrator"]
     log = logging.getLogger("src.main")
     while not shutdown_event.is_set():
         try:
-            results = await engine.run_cycle()
-            log.info("NXFH01_CYCLE_COMPLETE results=%s", results)
+            summary = await orchestrator.run_tick()
+            ran = sum(1 for r in summary.strategy_results if r.ran)
+            log.info(
+                "NXFH01_CYCLE_COMPLETE strategies_ran=%d raw_events=%d tick_ms=%.2f "
+                "track_a_submitted=%d track_a_registered=%d",
+                ran,
+                sum(r.raw_result_count for r in summary.strategy_results),
+                summary.tick_duration_ms,
+                summary.track_a_submitted,
+                summary.track_a_registered,
+            )
         except Exception:
             log.exception("NXFH01_CYCLE_ERROR")
         try:

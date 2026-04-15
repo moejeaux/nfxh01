@@ -9,6 +9,17 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _user_state_compat(hl_client: Any, address: str) -> Any:
+    """Prefer nested ``client.info.user_state`` (tests / wrappers), else ``client.user_state`` (HL SDK)."""
+    inner = getattr(hl_client, "info", None)
+    if inner is not None and callable(getattr(inner, "user_state", None)):
+        return inner.user_state(address)
+    direct = getattr(hl_client, "user_state", None)
+    if callable(direct):
+        return direct(address)
+    raise AttributeError("hl_client has no user_state")
+
+
 @dataclass
 class RiskDecision:
     approved: bool
@@ -122,7 +133,7 @@ class PortfolioState:
 
     def sync_from_hl(self, hl_client: Any, address: str) -> None:
         try:
-            state = hl_client.info.user_state(address)
+            state = _user_state_compat(hl_client, address)
         except Exception as e:
             logger.error("PORTFOLIO_SYNC_FAILED error=%s", str(e))
             return
@@ -163,6 +174,46 @@ class PortfolioState:
             "PORTFOLIO_SYNC_COMPLETE recovered=%d existing=%d",
             recovered, existing,
         )
+
+    def reconcile_open_positions_vs_hl(self, hl_client: Any, address: str) -> None:
+        """Compare in-memory open positions to HL ``user_state``; log ``RISK_RECONCILE_*`` on gaps (no auto-delete)."""
+        try:
+            state = _user_state_compat(hl_client, address)
+        except Exception as e:
+            logger.error("RISK_RECONCILE_FAILED error=%s", str(e))
+            return
+
+        hl_coins: set[str] = set()
+        for ap in state.get("assetPositions", []):
+            pos_data = ap.get("position", {})
+            szi = float(pos_data.get("szi", 0))
+            if szi == 0:
+                continue
+            coin = pos_data.get("coin", "")
+            if coin:
+                hl_coins.add(coin)
+
+        for engine_id, pmap in self._positions.items():
+            for position_id, pos in pmap.items():
+                coin = pos.signal.coin
+                if coin in hl_coins:
+                    continue
+                logger.warning(
+                    "RISK_RECONCILE_MEMORY_NOT_ON_VENUE engine_id=%s position_id=%s coin=%s "
+                    "(tracked in memory; no open HL perp — may have been closed externally)",
+                    engine_id,
+                    position_id,
+                    coin,
+                )
+
+        tracked = {p.signal.coin for _e, pmap in self._positions.items() for p in pmap.values()}
+        for c in hl_coins:
+            if c not in tracked:
+                logger.info(
+                    "RISK_RECONCILE_VENUE_NOT_IN_MEMORY coin=%s "
+                    "(HL shows position; run sync_from_hl to import or verify attribution)",
+                    c,
+                )
 
 
 @dataclass

@@ -1,4 +1,43 @@
 # Numeric thresholds for strategy directives — do not hardcode these in code paths.
+#
+# Multi-strategy orchestration: global tick sleeps ``tick_interval_seconds``; each strategy
+# runs only when its own ``cycle_interval_seconds`` has elapsed (see ``strategies``).
+orchestration:
+  tick_interval_seconds: 15
+  # When true, post-conflict NormalizedEntryIntent list is executed via UnifiedRiskLayer + DegenClaw.
+  track_a_execution_enabled: true
+  # If HL_WALLET_ADDRESS is set: pull unknown venue positions into ``recovered`` engine (safe import).
+  hl_sync_on_startup: false
+  # Log RISK_RECONCILE_* when in-memory opens disagree with HL (does not mutate state).
+  hl_reconcile_on_startup: false
+  execution_order:
+    - acevault
+    - growi_hf
+    - mc_recovery
+  conflict:
+    mode: skip_opposing
+    priority:
+      - acevault
+      - growi_hf
+      - mc_recovery
+
+strategies:
+  acevault:
+    enabled: true
+    engine_id: acevault
+  growi_hf:
+    enabled: false
+    engine_id: growi
+    cycle_interval_seconds: 60
+    max_candidates: 10
+    default_leverage: 1
+  mc_recovery:
+    enabled: false
+    engine_id: mc
+    cycle_interval_seconds: 120
+    max_candidates: 3
+    default_leverage: 1
+
 engines:
   planned_count: 5
   acevault_engine_id: 1

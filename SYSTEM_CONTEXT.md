@@ -10,17 +10,26 @@
 - **Engines #2–5:** Reserved for future strategies (RegimeDetector, etc.).
 - All engines route through `UnifiedRiskLayer.validate()` before `DegenClaw` order execution.
 
+### Multi-strategy orchestration (`src/nxfh01/orchestration/`)
+- **`StrategyOrchestrator`:** Global tick; per-strategy cadence from `config.yaml` (`strategies.*`, `orchestration.*`); failures isolated per strategy (`ORCH_STRATEGY_FAILED`).
+- **Track B (AceVault):** `AceVaultEngine.run_cycle()` — full internal loop (scan → risk → Fathom → DegenClaw). Same-tick arbitration with other strategies is not applied inside this path unless AceVault is later split into propose vs execute.
+- **Track A (Growi HF, MC Recovery, future):** Strategies return `NormalizedEntryIntent` items; orchestrator runs `ConflictPolicy` → `TrackAExecutor` → `UnifiedRiskLayer.validate` → DegenClaw → `PortfolioState.register_position`. Toggle with `orchestration.track_a_execution_enabled`.
+- **Config validation:** `validate_multi_strategy_config()` at startup (`engine_id` must match `engines:` keys, no duplicate `execution_order`, etc.).
+- **Track A DB:** `strategy_decisions` table + `DecisionJournal.log_track_a_entry` (migration `002_strategy_decisions.sql`).  
+- **HL reconciliation:** `PortfolioState.reconcile_open_positions_vs_hl` logs `RISK_RECONCILE_*`; optional startup hooks `orchestration.hl_sync_on_startup` / `hl_reconcile_on_startup` (requires `HL_WALLET_ADDRESS`). `sync_from_hl` uses `_user_state_compat` for SDK vs mock clients.  
+- **Backlog:** Optional AceVault propose/execute split for unified same-tick conflict with Track A.
+
 ### Key Components
 
 #### 1. **Execution Layer** (`src/execution/`)
 - `DegenClaw` (order executor): sole interface to Hyperliquid mainnet.
 - **Sacred:** Never modify without explicit approval.
 
-#### 2. **Signal Ingress** (`src/signal_ingress/`)
-- HTTP webhook receiver for external trade signals.
+#### 2. **Signal Ingress** (`src/signals/`; legacy rule may say `src/signal_ingress/`)
+- HTTP / mapping pipeline for external trade signals (separate from engine loops).
 - **Sacred:** Never modify without explicit approval.
 
-#### 3. **Risk Layer** (`src/nxfh01/risk/`)
+#### 3. **Risk Layer** (`src/risk/` — canonical `UnifiedRiskLayer`)
 - `UnifiedRiskLayer.validate()`: mandatory gate for all orders.
 - Enforces: no bypass flags, AceVault stop immutability (0.3% canonical), config-driven thresholds.
 
@@ -34,7 +43,7 @@
 - Cannot block trades, widen stops, or change direction.
 
 #### 6. **Logging** (`src/nxfh01/logging/`)
-- Structured event prefixes: `RISK_`, `ACEVAULT_`, `REGIME_`, `KILLSWITCH_ACTIVE`.
+- Structured event prefixes: `RISK_`, `ACEVAULT_`, `REGIME_`, `ORCH_`, `ORCH_TRACK_A_`, strategy-specific (e.g. `GROWI_HF_`, `MC_RECOVERY_`), `KILLSWITCH_*`.
 - No silent failures; every state change emitted.
 
 ### Interface Contracts (Never Change)
