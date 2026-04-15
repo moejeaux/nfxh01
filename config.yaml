@@ -26,13 +26,13 @@ strategies:
     enabled: true
     engine_id: acevault
   growi_hf:
-    enabled: false
+    enabled: true
     engine_id: growi
     cycle_interval_seconds: 60
     max_candidates: 10
     default_leverage: 1
   mc_recovery:
-    enabled: false
+    enabled: true
     engine_id: mc
     cycle_interval_seconds: 120
     max_candidates: 3
@@ -78,6 +78,41 @@ acevault:
     ranging: 0.6
     risk_off: 1.0
 
+growi_hf:
+  default_position_size_usd: 20
+  stop_loss_distance_pct: 0.35
+  take_profit_distance_pct: 1.2
+  rsi_period: 14
+  rsi_oversold: 30
+  rsi_overbought: 70
+  min_bars: 40
+  candle_interval: "5m"
+  max_coins_to_evaluate: 100
+  max_concurrent_positions: 4
+  regime_allow:
+    - ranging
+    - trending_down
+    - risk_off
+
+mc_recovery:
+  default_position_size_usd: 35
+  stop_loss_distance_pct: 0.45
+  take_profit_distance_pct: 2.0
+  lookback_high_bars: 48
+  min_drop_from_high_pct: 3.5
+  rsi_period: 14
+  rsi_max_for_entry: 38
+  min_bars: 50
+  candle_interval: "5m"
+  volume_ma_period: 20
+  min_volume_ratio: 0.85
+  max_coins_to_evaluate: 80
+  max_concurrent_positions: 2
+  regime_allow:
+    - trending_down
+    - risk_off
+    - ranging
+
 fathom:
   enabled: true
   # Per-exit post-trade blurbs (3b); six-hour strategy review uses fathom_retrospective.deep_model (14b).
@@ -111,10 +146,18 @@ regime:
   min_transition_interval_minutes: 15
   data_fetch_interval_seconds: 60
 
+# ACP v2: Python calls the Node buyer service (services/acp-buyer) when ACP_SDK_URL is set.
+acp:
+  min_trade_size_usd: 10
+  http_timeout_seconds: 120
+  offering_name: perp_trade
+  sdk_url: ""
+
 risk:
   # UnifiedRiskLayer is mandatory before any order reaches execution; no bypass flags.
   total_capital_usd: 10000
   max_portfolio_drawdown_24h: 0.05
   max_gross_multiplier: 1.5
-  max_correlated_longs: 3
+  # null = no limit on correlated long count (tune later if needed).
+  max_correlated_longs: null
   min_available_capital_usd: 10.50

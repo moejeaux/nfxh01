@@ -171,6 +171,16 @@ class TestCorrelatedLongReject:
         result = rl.validate(sig, "acevault")
         assert result.approved is True
 
+    def test_null_max_correlated_longs_allows_unlimited(self, portfolio_state, kill_switch):
+        config = _make_config(max_correlated_longs=None)
+        for i in range(10):
+            portfolio_state.register_position("a", _long_position(f"p{i}"))
+        rl = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+        sig = FakeSignal(coin="X", side="long", position_size_usd=100)
+        result = rl.validate(sig, "acevault")
+        assert result.approved is True
+        assert result.reason == "approved"
+
 
 class TestCheckPrecedence:
     def test_kill_switch_before_drawdown(self, portfolio_state, kill_switch):

@@ -147,7 +147,7 @@ async def build_context(config: dict) -> dict:
     else:
         logger.info("FATHOM_ADVISOR_DISABLED enabled=false in config")
 
-    degen_executor = DegenClawExecutor()
+    degen_executor = DegenClawExecutor(config=config)
 
     acevault_engine = AceVaultEngine(
         config=config,
@@ -160,8 +160,20 @@ async def build_context(config: dict) -> dict:
         fathom_advisor=fathom_advisor,
     )
 
-    growi_engine = GrowiHFEngine(config)
-    mc_engine = MCRecoveryEngine(config)
+    growi_engine = GrowiHFEngine(
+        config,
+        hl_client,
+        regime_detector,
+        kill_switch,
+        portfolio_state,
+    )
+    mc_engine = MCRecoveryEngine(
+        config,
+        hl_client,
+        regime_detector,
+        kill_switch,
+        portfolio_state,
+    )
 
     registry = StrategyRegistry(config)
     runners = {

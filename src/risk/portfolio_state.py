@@ -115,7 +115,10 @@ class PortfolioState:
     def is_correlated_overloaded(self, new_signal: Any, config: dict | None = None) -> bool:
         max_correlated = 3
         if config is not None:
-            max_correlated = config.get("risk", {}).get("max_correlated_longs", 3)
+            risk = config.get("risk") or {}
+            if "max_correlated_longs" in risk and risk["max_correlated_longs"] is None:
+                return False
+            max_correlated = risk.get("max_correlated_longs", 3)
         if new_signal.side != "long":
             return False
         open_long_count = 0
