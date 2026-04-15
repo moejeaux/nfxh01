@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from src.acp.degen_claw import AcpCloseRequest, AcpTradeRequest
 from src.engines.acevault.entry import EntryManager
 from src.engines.acevault.exit import AceExit, ExitManager
 from src.engines.acevault.models import AcePosition, AceSignal
@@ -79,9 +80,17 @@ class AceVaultEngine:
             self._open_positions, current_prices, regime_state.regime
         )
         for exit in exits:
-            await self.degen_executor.close(exit)
+            try:
+                self.degen_executor.submit_close(
+                    AcpCloseRequest(
+                        coin=exit.coin,
+                        rationale=f"AceVault exit: reason={exit.exit_reason} pnl={exit.pnl_pct:.3f}",
+                        idempotency_key=str(uuid.uuid4()),
+                    )
+                )
+            except Exception as e:
+                logger.error("ACEVAULT_CLOSE_FAILED coin=%s error=%s", exit.coin, e)
 
-            # Journal exit outcome
             if self._journal is not None:
                 try:
                     await self._journal.log_exit(
@@ -95,6 +104,29 @@ class AceVaultEngine:
                         exit.coin,
                         exit.pnl_pct,
                     )
+                    # Fire Fathom post-trade analysis as background task — never blocks cycle
+                    if self._fathom_advisor is not None:
+                        closed_decision = {
+                            "id": exit.position_id,
+                            "coin": exit.coin,
+                            "entry_price": exit.entry_price if hasattr(exit, "entry_price") else None,
+                            "exit_price": exit.exit_price,
+                            "stop_loss_price": exit.stop_loss_price if hasattr(exit, "stop_loss_price") else None,
+                            "take_profit_price": exit.take_profit_price if hasattr(exit, "take_profit_price") else None,
+                            "pnl_usd": exit.pnl_usd,
+                            "pnl_pct": exit.pnl_pct,
+                            "exit_reason": exit.exit_reason,
+                            "hold_duration_seconds": exit.hold_duration_seconds,
+                            "regime": regime_state.regime.value,
+                            "regime_at_close": regime_state.regime.value,
+                            "fathom_size_mult": 1.0,
+                        }
+                        import asyncio as _asyncio
+                        _asyncio.create_task(
+                            self._fathom_advisor.analyse_trade(closed_decision, self._journal)
+                        )
+                        logger.info("FATHOM_POST_ANALYSIS_QUEUED coin=%s decision_id=%s",
+                                    exit.coin, exit.position_id)
                 except Exception as e:
                     logger.warning(
                         "DECISION_JOURNAL_EXIT_FAILED coin=%s error=%s",
@@ -127,11 +159,12 @@ class AceVaultEngine:
             logger.info("ACEVAULT_NO_CANDIDATES_THIS_CYCLE")
             return results
 
+        # --- pre-build signals and run Fathom concurrently for all candidates ---
+        valid_signals = []
         for candidate in candidates:
             signal = self._entry_manager.should_enter(candidate, regime_state, weight)
             if signal is None:
                 continue
-
             risk_decision = self.risk_layer.validate(signal, "acevault")
             if not risk_decision.approved:
                 logger.info(
@@ -140,15 +173,11 @@ class AceVaultEngine:
                     risk_decision.reason,
                 )
                 continue
+            valid_signals.append(signal)
 
-            # --- Fathom advisory ---
-            fathom_result = {
-                "size_mult": 1.0,
-                "reasoning": "fathom_disabled",
-                "source": "deterministic",
-            }
-
-            if self._fathom_advisor is not None:
+        # Fetch all prior contexts concurrently
+        if self._fathom_advisor is not None and valid_signals:
+            async def _get_advice(signal):
                 try:
                     prior_context = []
                     if self._journal is not None:
@@ -164,32 +193,64 @@ class AceVaultEngine:
                         for d in prior_context
                         if d.get("pnl_pct") is not None
                     ]) or "No prior decisions in this regime yet."
-
-                    fathom_result = await self._fathom_advisor.advise_acevault(
+                    return await self._fathom_advisor.advise_acevault(
                         signal=signal,
                         regime_state=regime_state,
                         prior_context=prior_str,
                     )
-
-                    signal.position_size_usd = (
-                        signal.position_size_usd * fathom_result["size_mult"]
-                    )
-                    logger.info(
-                        "FATHOM_SIZE_APPLIED coin=%s mult=%.2f source=%s reasoning=%s",
-                        signal.coin,
-                        fathom_result["size_mult"],
-                        fathom_result["source"],
-                        fathom_result.get("reasoning", ""),
-                    )
                 except Exception as e:
-                    logger.warning(
-                        "FATHOM_ADVISORY_FAILED coin=%s error=%s — using default size",
-                        signal.coin,
-                        e,
-                    )
+                    logger.warning("FATHOM_ADVISORY_FAILED coin=%s error=%s", signal.coin, e)
+                    return {"size_mult": 1.0, "reasoning": "fathom_error", "source": "deterministic"}
+
+            import asyncio as _asyncio
+            fathom_results = await _asyncio.gather(*[_get_advice(s) for s in valid_signals])
+            fathom_map = {s.coin: r for s, r in zip(valid_signals, fathom_results)}
+        else:
+            fathom_map = {}
+
+        for signal in valid_signals:
+            fathom_result = fathom_map.get(signal.coin, {
+                "size_mult": 1.0,
+                "reasoning": "fathom_disabled",
+                "source": "deterministic",
+            })
+
+            # Apply Fathom size multiplier
+            signal.position_size_usd = signal.position_size_usd * fathom_result["size_mult"]
+            logger.info(
+                "FATHOM_SIZE_APPLIED coin=%s mult=%.2f source=%s reasoning=%s",
+                signal.coin,
+                fathom_result["size_mult"],
+                fathom_result["source"],
+                fathom_result.get("reasoning", ""),
+            )
 
             # --- submit to DegenClaw ---
-            await self.degen_executor.submit(signal)
+            try:
+                request = AcpTradeRequest(
+                    coin=signal.coin,
+                    side=signal.side,
+                    size_usd=float(signal.position_size_usd),
+                    leverage=1,
+                    order_type="market",
+                    stop_loss=signal.stop_loss_price,
+                    take_profit=signal.take_profit_price,
+                    rationale=f"AceVault short: weakness={signal.weakness_score:.3f} regime={signal.regime_at_entry}",
+                    idempotency_key=str(uuid.uuid4()),
+                )
+                response = self.degen_executor.submit_trade(request)
+                logger.info(
+                    "ACEVAULT_TRADE_SUBMITTED coin=%s side=%s size_usd=%.2f job_id=%s",
+                    signal.coin,
+                    signal.side,
+                    signal.position_size_usd,
+                    response.job_id if response else None,
+                )
+            except Exception as e:
+                logger.error(
+                    "ACEVAULT_SUBMIT_FAILED coin=%s error=%s", signal.coin, e
+                )
+                continue
 
             # --- journal entry ---
             decision_id = str(uuid.uuid4())
@@ -252,13 +313,6 @@ class AceVaultEngine:
                 ) * pos.signal.position_size_usd
 
     async def _fetch_market_data(self) -> dict:
-        try:
-            mids = self._hl_client.info.all_mids()
-            btc_price = float(mids.get("BTC", 0))
-            _ = btc_price  # reserved for real BTC candle fetch
-        except Exception:
-            pass
-        # Real BTC candle-based returns wired in next iteration
         return {
             "btc_1h_return": 0.0,
             "btc_4h_return": 0.0,
@@ -267,7 +321,7 @@ class AceVaultEngine:
 
     async def _fetch_current_prices(self) -> dict[str, float]:
         try:
-            mids = self._hl_client.info.all_mids()
+            mids = self._hl_client.all_mids()
             return {coin: float(price) for coin, price in mids.items()}
         except Exception as e:
             logger.warning("ACEVAULT_PRICE_FETCH_FAILED error=%s", e)

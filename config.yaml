@@ -26,7 +26,7 @@ acevault:
   min_weakness_score: 0.3
   max_concurrent_positions: 5
   max_hold_minutes: 240
-  cycle_interval_seconds: 30
+  cycle_interval_seconds: 15
   verification_size_usd: 50
   regime_weights:
     trending_up: 0.4
@@ -36,8 +36,10 @@ acevault:
 
 fathom:
   enabled: true
-  model: fathom-r1-14b
-  timeout_seconds: 15
+  model: llama3.2:3b
+  fast_model: llama3.2:3b
+  post_analysis_timeout_seconds: 180
+  timeout_seconds: 30
   acevault_max_mult: 1.5
   majors_max_mult: 2.0
   enabled: true
@@ -54,6 +56,6 @@ risk:
   # UnifiedRiskLayer is mandatory before any order reaches execution; no bypass flags.
   total_capital_usd: 10000
   max_portfolio_drawdown_24h: 0.05
-  max_gross_multiplier: 3.0
+  max_gross_multiplier: 1.5
   max_correlated_longs: 3
   min_available_capital_usd: 10.50

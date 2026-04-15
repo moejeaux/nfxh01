@@ -25,7 +25,7 @@ class DecisionJournal:
             raise RuntimeError("DecisionJournal not connected - call connect() first")
 
         fathom_override = fathom_result is not None
-        fathom_size_mult = fathom_result.get("size_multiplier", 1.0) if fathom_result else None
+        fathom_size_mult = fathom_result.get("size_mult", 1.0) if fathom_result else None
         fathom_reasoning = fathom_result.get("reasoning") if fathom_result else None
 
         query = """
@@ -162,6 +162,25 @@ class DecisionJournal:
             win_rate,
         )
         return stats
+
+
+    async def log_post_analysis(self, decision_id: str, analysis: str) -> None:
+        """Write Fathom post-trade analysis back to the decision record."""
+        if self._pool is None:
+            raise RuntimeError("DecisionJournal not connected - call connect() first")
+        query = """
+        UPDATE acevault_decisions
+        SET fathom_post_analysis = $1, fathom_post_analysis_at = $2
+        WHERE id = $3
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                query,
+                analysis,
+                datetime.now(timezone.utc),
+                decision_id,
+            )
+        logger.info("DECISION_JOURNAL_POST_ANALYSIS_LOGGED decision_id=%s", decision_id)
 
     async def close(self) -> None:
         """Close the connection pool."""
