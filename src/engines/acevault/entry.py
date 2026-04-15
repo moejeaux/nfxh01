@@ -18,7 +18,7 @@ class EntryManager:
         self, candidate: AltCandidate, regime: RegimeState, regime_weight: float
     ) -> AceSignal | None:
         gates = [
-            ("weakness_gate", self._check_weakness_gate, (candidate,)),
+            ("weakness_gate", self._check_weakness_gate, (candidate, regime)),
             ("liquidity_gate", self._check_liquidity_gate, (candidate,)),
             ("regime_gate", self._check_regime_gate, (regime.regime, regime_weight)),
             ("duplicate_gate", self._check_duplicate_gate, (candidate.coin,)),
@@ -40,25 +40,34 @@ class EntryManager:
         )
         return signal
 
-    def _check_weakness_gate(self, candidate: AltCandidate) -> bool:
-        min_score = self._acevault_cfg["min_weakness_score"]
+    def _check_weakness_gate(self, candidate: AltCandidate, regime: RegimeState) -> bool:
+        base_min = float(self._acevault_cfg["min_weakness_score"])
+        if regime.regime == RegimeType.RANGING:
+            min_score = float(
+                self._acevault_cfg.get("ranging_min_weakness_score", base_min)
+            )
+        else:
+            min_score = base_min
         passed = candidate.weakness_score >= min_score
         if not passed:
             logger.info(
-                "ACEVAULT_ENTRY_REJECTED coin=%s gate=weakness_gate reason=weakness_score %.3f < min %.3f",
+                "ACEVAULT_ENTRY_REJECTED coin=%s gate=weakness_gate reason=weakness_score %.3f < min %.3f regime=%s",
                 candidate.coin,
                 candidate.weakness_score,
                 min_score,
+                regime.regime.value,
             )
         return passed
 
     def _check_liquidity_gate(self, candidate: AltCandidate) -> bool:
-        passed = candidate.volume_ratio >= 0.8
+        min_vol = float(self._acevault_cfg.get("min_volume_ratio", 0.8))
+        passed = candidate.volume_ratio >= min_vol
         if not passed:
             logger.info(
-                "ACEVAULT_ENTRY_REJECTED coin=%s gate=liquidity_gate reason=volume_ratio %.3f < 0.8",
+                "ACEVAULT_ENTRY_REJECTED coin=%s gate=liquidity_gate reason=volume_ratio %.3f < min_volume_ratio %.3f",
                 candidate.coin,
                 candidate.volume_ratio,
+                min_vol,
             )
         return passed
 
@@ -96,8 +105,10 @@ class EntryManager:
 
     def _build_signal(self, candidate: AltCandidate, regime: RegimeState) -> AceSignal:
         entry_price = candidate.current_price
-        stop_loss_price = entry_price * (1 + 0.003)
-        take_profit_price = entry_price * (1 - 0.027)
+        sl_pct = float(self._acevault_cfg["stop_loss_distance_pct"]) / 100.0
+        tp_pct = float(self._acevault_cfg.get("take_profit_distance_pct", 2.7)) / 100.0
+        stop_loss_price = entry_price * (1 + sl_pct)
+        take_profit_price = entry_price * (1 - tp_pct)
         position_size_usd = self._acevault_cfg.get("default_position_size_usd", 100)
 
         return AceSignal(

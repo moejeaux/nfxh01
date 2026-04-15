@@ -19,6 +19,9 @@ def base_config():
         },
         "acevault": {
             "stop_loss_distance_pct": 0.3,
+            "take_profit_distance_pct": 2.7,
+            "ranging_min_weakness_score": 0.45,
+            "min_volume_ratio": 0.8,
             "max_candidates": 5,
             "min_weakness_score": 0.3,
             "max_concurrent_positions": 5,

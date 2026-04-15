@@ -57,7 +57,12 @@ def mock_risk_layer():
 
 @pytest.fixture
 def mock_degen_executor():
-    return AsyncMock()
+    ex = Mock()
+    _tr = Mock()
+    _tr.job_id = "engine-test-job"
+    ex.submit_trade = Mock(return_value=_tr)
+    ex.submit_close = Mock()
+    return ex
 
 
 @pytest.fixture
@@ -145,7 +150,7 @@ async def test_cycle_processes_exits_before_entries(engine, sample_position, cap
         result = await engine.run_cycle()
     
     # Verify exit was processed
-    engine.degen_executor.close.assert_called_once()
+    engine.degen_executor.submit_close.assert_called_once()
     assert len(engine._open_positions) == 0
     assert len(result) == 1
     assert isinstance(result[0], AceExit)
@@ -183,7 +188,7 @@ async def test_cycle_skips_risk_rejected_signal(engine, mock_risk_layer, sample_
          patch.object(engine, "_fetch_current_prices", return_value={}):
         result = await engine.run_cycle()
     
-    engine.degen_executor.submit.assert_not_called()
+    engine.degen_executor.submit_trade.assert_not_called()
     assert len(engine._open_positions) == 0
     assert len(result) == 0
     assert "ACEVAULT_RISK_REJECTED coin=DOGE reason=position_limit_exceeded" in caplog.text
@@ -217,7 +222,9 @@ async def test_cycle_submits_approved_signal(engine, sample_signal):
          patch.object(engine, "_fetch_current_prices", return_value={}):
         result = await engine.run_cycle()
     
-    engine.degen_executor.submit.assert_called_once_with(sample_signal)
+    engine.degen_executor.submit_trade.assert_called_once()
+    req = engine.degen_executor.submit_trade.call_args[0][0]
+    assert req.coin == sample_signal.coin
     assert len(result) == 1
     assert isinstance(result[0], AceSignal)
 

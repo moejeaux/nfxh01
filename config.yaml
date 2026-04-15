@@ -21,9 +21,14 @@ engines:
 acevault:
   default_position_size_usd: 25
   # Fixed distance from entry to stop (percent). Immutable after position creation; risk layer rejects widening.
-  stop_loss_distance_pct: 0.3
+  # Tightened per Fathom retrospective (ranging-market loss cluster); stay at or below 0.3% ceiling.
+  stop_loss_distance_pct: 0.28
+  take_profit_distance_pct: 2.7
   max_candidates: 5
-  min_weakness_score: 0.3
+  min_weakness_score: 0.38
+  # Stricter weakness required when regime is ranging (range-aware entry).
+  ranging_min_weakness_score: 0.45
+  min_volume_ratio: 0.88
   max_concurrent_positions: 5
   max_hold_minutes: 240
   cycle_interval_seconds: 15
@@ -41,8 +46,9 @@ fathom:
   fast_model: llama3.2:3b
   post_analysis_timeout_seconds: 180
   timeout_seconds: 30
-  acevault_max_mult: 1.5
-  majors_max_mult: 2.0
+  # Reduced ~15% vs prior caps per Fathom retrospective advisory.
+  acevault_max_mult: 1.28
+  majors_max_mult: 1.68
 
 fathom_retrospective:
   enabled: true

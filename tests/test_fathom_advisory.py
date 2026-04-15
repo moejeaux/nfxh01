@@ -11,10 +11,12 @@ from src.nxfh01.contracts.engine import EngineId
 def test_clamp_acevault_and_majors():
     cfg = load_config()
     adv = FathomAdvisory(cfg)
+    ace_cap = Decimal(str(cfg["fathom"]["acevault_max_mult"]))
+    maj_cap = Decimal(str(cfg["fathom"]["majors_max_mult"]))
     ace = adv.clamp_size_multiplier(Decimal("99"), EngineId.ACEVAULT, is_major_asset=False)
-    assert ace.size_multiplier == Decimal("1.5")
+    assert ace.size_multiplier == ace_cap
     maj = adv.clamp_size_multiplier(Decimal("99"), EngineId.ACEVAULT, is_major_asset=True)
-    assert maj.size_multiplier == Decimal("2")
+    assert maj.size_multiplier == maj_cap
 
 
 def test_timeout_returns_default():
@@ -44,7 +46,7 @@ def test_block_trade_ignored_for_sizing():
         EngineId.ACEVAULT,
         is_major_asset=False,
     )
-    assert out.size_multiplier == Decimal("1.4")
+    assert out.size_multiplier == Decimal(str(cfg["fathom"]["acevault_max_mult"]))
 
 
 def test_bad_multiplier_defaults():

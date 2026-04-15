@@ -1,8 +1,9 @@
 import pytest
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
+from unittest.mock import Mock, MagicMock, patch
 from datetime import datetime, timezone
 import logging
 
+from src.acp.degen_claw import AcpCloseRequest
 from src.engines.acevault.engine import AceVaultEngine
 from src.engines.acevault.scanner import AltScanner
 from src.engines.acevault.models import AcePosition, AceSignal, AltCandidate
@@ -23,6 +24,10 @@ def mock_config():
             },
             "max_candidates": 5,
             "min_weakness_score": 0.3,
+            "ranging_min_weakness_score": 0.45,
+            "min_volume_ratio": 0.8,
+            "stop_loss_distance_pct": 0.3,
+            "take_profit_distance_pct": 2.7,
             "max_concurrent_positions": 5,
             "max_hold_minutes": 240,
             "default_position_size_usd": 100,
@@ -83,7 +88,11 @@ def mock_risk_layer():
 
 @pytest.fixture
 def mock_degen_executor():
-    executor = AsyncMock()
+    executor = Mock()
+    _tr = Mock()
+    _tr.job_id = "edge-test-job"
+    executor.submit_trade = Mock(return_value=_tr)
+    executor.submit_close = Mock()
     return executor
 
 
@@ -286,7 +295,10 @@ class TestKillswitchStopsEntriesNotExits:
             assert result[0].position_id == "pos_1"
             
             # Executor should be called to close position
-            engine.degen_executor.close.assert_awaited_once_with(exit)
+            engine.degen_executor.submit_close.assert_called_once()
+            close_req = engine.degen_executor.submit_close.call_args[0][0]
+            assert isinstance(close_req, AcpCloseRequest)
+            assert close_req.coin == "DOGE"
             
             # Position should be removed from open positions
             assert len(engine._open_positions) == 0

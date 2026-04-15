@@ -12,6 +12,10 @@ def mock_config():
     return {
         "acevault": {
             "min_weakness_score": 0.3,
+            "ranging_min_weakness_score": 0.45,
+            "min_volume_ratio": 0.8,
+            "stop_loss_distance_pct": 0.3,
+            "take_profit_distance_pct": 2.7,
             "max_concurrent_positions": 5,
             "default_position_size_usd": 150,
         }
@@ -49,6 +53,16 @@ def sample_regime():
 
 
 @pytest.fixture
+def ranging_regime():
+    return RegimeState(
+        regime=RegimeType.RANGING,
+        confidence=0.7,
+        timestamp=datetime.now(timezone.utc),
+        indicators_snapshot={},
+    )
+
+
+@pytest.fixture
 def entry_manager(mock_config, mock_portfolio_state):
     return EntryManager(mock_config, mock_portfolio_state)
 
@@ -65,6 +79,30 @@ def test_gate_weakness_fails(entry_manager, sample_candidate, sample_regime, cap
     assert "weakness_score 0.100 < min 0.300" in caplog.text
 
 
+def test_gate_weakness_ranging_stricter(entry_manager, sample_candidate, ranging_regime, caplog):
+    sample_candidate.weakness_score = 0.4
+
+    with caplog.at_level("INFO"):
+        result = entry_manager.should_enter(sample_candidate, ranging_regime, 0.6)
+
+    assert result is None
+    assert "ACEVAULT_ENTRY_REJECTED" in caplog.text
+    assert "gate=weakness_gate" in caplog.text
+    assert "weakness_score 0.400 < min 0.450" in caplog.text
+
+
+def test_gate_weakness_passes_non_ranging_at_base_threshold(
+    entry_manager, sample_candidate, sample_regime, caplog
+):
+    sample_candidate.weakness_score = 0.4
+
+    with caplog.at_level("INFO"):
+        result = entry_manager.should_enter(sample_candidate, sample_regime, 0.9)
+
+    assert result is not None
+    assert isinstance(result, AceSignal)
+
+
 def test_gate_liquidity_fails(entry_manager, sample_candidate, sample_regime, caplog):
     sample_candidate.volume_ratio = 0.5
     
@@ -74,7 +112,7 @@ def test_gate_liquidity_fails(entry_manager, sample_candidate, sample_regime, ca
     assert result is None
     assert "ACEVAULT_ENTRY_REJECTED" in caplog.text
     assert "gate=liquidity_gate" in caplog.text
-    assert "volume_ratio 0.500 < 0.8" in caplog.text
+    assert "volume_ratio 0.500 < min_volume_ratio 0.800" in caplog.text
 
 
 def test_gate_regime_fails(entry_manager, sample_candidate, sample_regime, caplog):
@@ -230,6 +268,10 @@ def test_position_size_fallback_default(mock_portfolio_state):
     config_without_default = {
         "acevault": {
             "min_weakness_score": 0.3,
+            "ranging_min_weakness_score": 0.45,
+            "min_volume_ratio": 0.8,
+            "stop_loss_distance_pct": 0.3,
+            "take_profit_distance_pct": 2.7,
             "max_concurrent_positions": 5,
         }
     }

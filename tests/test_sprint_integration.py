@@ -2,12 +2,12 @@
 End-to-end integration tests for the sprint pipeline.
 
 Real components: PortfolioState, KillSwitch, RegimeDetector, UnifiedRiskLayer, AceVaultEngine.
-AsyncMock: hl_client, degen_executor.
+AsyncMock: hl_client. Mock: degen_executor (sync submit_trade / submit_close).
 """
 
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -37,6 +37,10 @@ def _make_config(
             },
             "max_candidates": 5,
             "min_weakness_score": 0.3,
+            "ranging_min_weakness_score": 0.45,
+            "min_volume_ratio": 0.8,
+            "stop_loss_distance_pct": 0.3,
+            "take_profit_distance_pct": 2.7,
             "max_concurrent_positions": 5,
             "max_hold_minutes": 240,
             "default_position_size_usd": 100,
@@ -91,7 +95,11 @@ def _build_stack(config: dict | None = None):
     """Construct the full real component stack with AsyncMock externals."""
     cfg = config or _make_config()
     hl_client = AsyncMock()
-    degen_executor = AsyncMock()
+    degen_executor = Mock()
+    _trade_resp = Mock()
+    _trade_resp.job_id = "test-job-id"
+    degen_executor.submit_trade = Mock(return_value=_trade_resp)
+    degen_executor.submit_close = Mock()
     portfolio_state = PortfolioState()
     kill_switch = KillSwitch()
     regime_detector = RegimeDetector(cfg, data_fetcher=lambda: None)
@@ -127,8 +135,8 @@ async def test_trending_down_entry_submits_and_registers(caplog):
     ):
         results = await engine.run_cycle()
 
-    degen_executor.submit.assert_called_once()
-    submitted_signal = degen_executor.submit.call_args[0][0]
+    degen_executor.submit_trade.assert_called_once()
+    submitted_signal = degen_executor.submit_trade.call_args[0][0]
     assert submitted_signal.coin == "DOGE"
     assert submitted_signal.side == "short"
 
@@ -177,14 +185,13 @@ async def test_trending_up_exits_existing_position(caplog):
     with (
         patch.object(engine, "_fetch_market_data", return_value=_trending_up_market_data()),
         patch.object(engine, "_fetch_current_prices", return_value={"AVAX": 34.0}),
+        patch.object(engine._scanner, "scan", return_value=[]),
     ):
         results = await engine.run_cycle()
 
-    degen_executor.close.assert_called_once()
-    closed_exit = degen_executor.close.call_args[0][0]
-    assert isinstance(closed_exit, AceExit)
-    assert closed_exit.coin == "AVAX"
-    assert closed_exit.exit_reason == "regime_shift"
+    degen_executor.submit_close.assert_called_once()
+    close_req = degen_executor.submit_close.call_args[0][0]
+    assert close_req.coin == "AVAX"
 
     assert len(engine._open_positions) == 0
     exits = [r for r in results if isinstance(r, AceExit)]
@@ -215,7 +222,7 @@ async def test_portfolio_dd_breach_rejects_signals(caplog):
     ):
         results = await engine.run_cycle()
 
-    degen_executor.submit.assert_not_called()
+    degen_executor.submit_trade.assert_not_called()
     signals = [r for r in results if isinstance(r, AceSignal)]
     assert len(signals) == 0
 
@@ -259,13 +266,14 @@ async def test_kill_switch_blocks_entries_allows_exits(caplog):
     with (
         patch.object(engine, "_fetch_market_data", return_value=_trending_up_market_data()),
         patch.object(engine, "_fetch_current_prices", return_value={"LINK": 14.5}),
+        patch.object(engine._scanner, "scan", return_value=[]),
     ):
         results = await engine.run_cycle()
 
-    degen_executor.close.assert_called_once()
+    degen_executor.submit_close.assert_called_once()
     assert len(engine._open_positions) == 0
 
-    degen_executor.submit.assert_not_called()
+    degen_executor.submit_trade.assert_not_called()
 
     assert "ACEVAULT_KILL_SWITCH_ACTIVE" in caplog.text
     assert "entries_blocked=True" in caplog.text
@@ -295,7 +303,7 @@ async def test_full_lifecycle_entry_hold_exit(caplog):
     signals_1 = [r for r in results_1 if isinstance(r, AceSignal)]
     assert len(signals_1) == 1
     assert signals_1[0].coin == "ARB"
-    degen_executor.submit.assert_called_once()
+    degen_executor.submit_trade.assert_called_once()
 
     # --- cycle 2: hold (price moves down but not to TP yet) ---
     with (
@@ -323,7 +331,7 @@ async def test_full_lifecycle_entry_hold_exit(caplog):
     assert len(exits_3) == 1
     assert exits_3[0].coin == "ARB"
     assert exits_3[0].exit_reason == "take_profit"
-    degen_executor.close.assert_called_once()
+    degen_executor.submit_close.assert_called_once()
 
     assert "ACEVAULT_EXIT coin=ARB reason=take_profit" in caplog.text
 
@@ -359,10 +367,10 @@ async def test_fathom_unavailable_trade_executes_normally(caplog):
     ):
         results = await engine.run_cycle()
 
-    degen_executor.submit.assert_called_once()
-    submitted = degen_executor.submit.call_args[0][0]
+    degen_executor.submit_trade.assert_called_once()
+    submitted = degen_executor.submit_trade.call_args[0][0]
     assert submitted.coin == "FTM"
-    assert submitted.position_size_usd == cfg["acevault"]["default_position_size_usd"]
+    assert submitted.size_usd == cfg["acevault"]["default_position_size_usd"]
 
     assert len(engine._open_positions) == 1
 
