@@ -11,10 +11,15 @@ logger = logging.getLogger(__name__)
 EXCLUDED_COINS = frozenset({"BTC", "ETH", "SOL"})
 
 
-def list_perp_coins(hl_client: Any) -> list[str]:
-    """Tradable perp symbols from mids (excludes spot pairs and index names)."""
+def list_perp_coins(
+    hl_client: Any, mids: dict[str, Any] | None = None
+) -> list[str]:
+    """Tradable perp symbols from mids (excludes spot pairs and index names).
+
+    Pass ``mids`` from a single ``all_mids()`` call to avoid one POST per usage.
+    """
     try:
-        raw = hl_client.all_mids()
+        raw = mids if mids is not None else hl_client.all_mids()
     except Exception as e:
         logger.warning("TRACK_A_MIDS_FAILED error=%s", e)
         return []
@@ -99,10 +104,18 @@ def max_drawdown_from_high_pct(closes: list[float], lookback_bars: int) -> float
     return (hi - last) / hi * 100.0
 
 
-def resolve_mid_price(hl_client: Any, coin: str) -> tuple[str, float] | None:
-    """Return ``(canonical_mids_key, price)`` for Hyperliquid ``all_mids`` lookup (case-safe)."""
+def resolve_mid_price(
+    hl_client: Any,
+    coin: str,
+    mids: dict[str, Any] | None = None,
+) -> tuple[str, float] | None:
+    """Return ``(canonical_mids_key, price)`` for Hyperliquid ``all_mids`` lookup (case-safe).
+
+    Pass ``mids`` from one ``all_mids()`` snapshot to avoid repeated POSTs in tight loops.
+    """
     try:
-        mids = hl_client.all_mids()
+        if mids is None:
+            mids = hl_client.all_mids()
     except Exception as e:
         logger.warning("TRACK_A_MIDS_FAILED error=%s", e)
         return None

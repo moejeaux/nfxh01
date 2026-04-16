@@ -82,11 +82,17 @@ class MCRecoveryEngine:
         tp_pct = float(mc.get("take_profit_distance_pct", 2.0))
         lev = int(st.get("default_leverage", 1))
 
-        coins = list_perp_coins(self._hl)[:max_eval]
+        try:
+            mids_snap = self._hl.all_mids()
+        except Exception as e:
+            logger.warning("MC_RECOVERY_MIDS_FAILED error=%s", e)
+            return []
+
+        coins = list_perp_coins(self._hl, mids=mids_snap)[:max_eval]
         scored: list[tuple[float, str, float, float, float]] = []
 
         for coin in coins:
-            resolved = resolve_mid_price(self._hl, coin)
+            resolved = resolve_mid_price(self._hl, coin, mids=mids_snap)
             if resolved is None:
                 continue
             key, ref_px = resolved

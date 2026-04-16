@@ -77,11 +77,17 @@ class GrowiHFEngine:
         tp_pct = float(gh.get("take_profit_distance_pct", 1.2))
         lev = int(st.get("default_leverage", 1))
 
-        coins = list_perp_coins(self._hl)[:max_eval]
+        try:
+            mids_snap = self._hl.all_mids()
+        except Exception as e:
+            logger.warning("GROWI_HF_MIDS_FAILED error=%s", e)
+            return []
+
+        coins = list_perp_coins(self._hl, mids=mids_snap)[:max_eval]
         scored: list[tuple[float, str, str, float, float]] = []
 
         for coin in coins:
-            resolved = resolve_mid_price(self._hl, coin)
+            resolved = resolve_mid_price(self._hl, coin, mids=mids_snap)
             if resolved is None:
                 continue
             key, ref_px = resolved

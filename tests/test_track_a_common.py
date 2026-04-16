@@ -36,3 +36,9 @@ def test_resolve_mid_price_case_insensitive():
     hl = MagicMock()
     hl.all_mids.return_value = {"DOGE": "0.1234"}
     assert resolve_mid_price(hl, "doge") == ("DOGE", 0.1234)
+
+
+def test_resolve_mid_price_precomputed_mids_skips_all_mids():
+    hl = MagicMock()
+    assert resolve_mid_price(hl, "doge", mids={"DOGE": "0.1"}) == ("DOGE", 0.1)
+    hl.all_mids.assert_not_called()

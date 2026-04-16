@@ -105,7 +105,8 @@ growi_hf:
   rsi_overbought: 70
   min_bars: 40
   candle_interval: "5m"
-  max_coins_to_evaluate: 100
+  # Each coin = one candles_snapshot POST; keep modest vs HL limits (AceVault already scans many coins).
+  max_coins_to_evaluate: 40
   max_concurrent_positions: 4
   regime_allow:
     - ranging
@@ -124,7 +125,7 @@ mc_recovery:
   candle_interval: "5m"
   volume_ma_period: 20
   min_volume_ratio: 0.85
-  max_coins_to_evaluate: 80
+  max_coins_to_evaluate: 40
   max_concurrent_positions: 2
   regime_allow:
     - trending_down

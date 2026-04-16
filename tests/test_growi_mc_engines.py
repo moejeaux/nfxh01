@@ -92,7 +92,7 @@ async def test_growi_emits_intent_when_rsi_extreme(monkeypatch, hl_mock):
     )
     monkeypatch.setattr(
         "src.engines.growi_hf.engine.list_perp_coins",
-        lambda _hl: ["ZZTEST"],
+        lambda _hl, mids=None: ["ZZTEST"],
     )
     monkeypatch.setattr(
         "src.engines.growi_hf.engine.wilders_rsi",
@@ -153,7 +153,7 @@ async def test_mc_emits_long_when_drop_and_volume(monkeypatch, hl_mock):
     )
     monkeypatch.setattr(
         "src.engines.mc_recovery.engine.list_perp_coins",
-        lambda _hl: ["ZZTEST"],
+        lambda _hl, mids=None: ["ZZTEST"],
     )
     monkeypatch.setattr(
         "src.engines.mc_recovery.engine.max_drawdown_from_high_pct",

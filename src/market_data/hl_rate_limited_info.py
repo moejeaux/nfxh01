@@ -27,7 +27,7 @@ class RateLimitedInfo(Info):
         self._rate_cfg = rate_config
         self._hl_post_lock = threading.Lock()
         self._hl_last_post_monotonic = 0.0
-        # Short-lived cache: track_a_common.resolve_mid_price calls all_mids() per coin (~100×/cycle).
+        # Short-lived cache for repeated all_mids(); Growi/MC also pass one mids snapshot in-process.
         self._mids_cache: Any = None
         self._mids_cache_dex: str | None = None
         self._mids_cache_mono: float = 0.0
