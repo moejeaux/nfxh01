@@ -15,6 +15,7 @@ dependencies = [
     "asyncpg",
     "pyyaml",
     "redis>=5.0",
+    "hyperliquid-python-sdk>=0.22",
 ]
 
 [project.optional-dependencies]
