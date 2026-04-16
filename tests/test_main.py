@@ -20,6 +20,7 @@ def base_config():
         "hyperliquid_api": {
             "api_base_url": "https://api.hyperliquid.xyz",
             "min_interval_ms": 175,
+            "mids_cache_ttl_seconds": 5.0,
             "max_retries_on_429": 8,
             "backoff_base_seconds": 1.25,
             "backoff_max_seconds": 120.0,

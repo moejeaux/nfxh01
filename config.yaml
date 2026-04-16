@@ -7,6 +7,8 @@ hyperliquid_api:
   api_base_url: "https://api.hyperliquid.xyz"
   # Space between all HL REST posts. AceVault pulls ~cap+2 /info calls per scan; raise if 429 persists.
   min_interval_ms: 175
+  # Growi/MC call all_mids() inside per-coin loops; cache avoids ~100 duplicate allMids POSTs per tick.
+  mids_cache_ttl_seconds: 5.0
   max_retries_on_429: 8
   backoff_base_seconds: 1.25
   backoff_max_seconds: 120.0

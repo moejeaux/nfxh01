@@ -27,7 +27,35 @@ class RateLimitedInfo(Info):
         self._rate_cfg = rate_config
         self._hl_post_lock = threading.Lock()
         self._hl_last_post_monotonic = 0.0
+        # Short-lived cache: track_a_common.resolve_mid_price calls all_mids() per coin (~100×/cycle).
+        self._mids_cache: Any = None
+        self._mids_cache_dex: str | None = None
+        self._mids_cache_mono: float = 0.0
         super().__init__(base_url=base_url, skip_ws=skip_ws)
+
+    def all_mids(self, dex: str = "") -> Any:
+        """Delegate to API with optional TTL cache (config ``mids_cache_ttl_seconds``)."""
+        cfg = self._rate_cfg
+        ttl = float(cfg.get("mids_cache_ttl_seconds", 0.0))
+        now = time.monotonic()
+        if (
+            ttl > 0
+            and self._mids_cache is not None
+            and self._mids_cache_dex == dex
+            and (now - self._mids_cache_mono) < ttl
+        ):
+            if isinstance(self._mids_cache, dict):
+                return dict(self._mids_cache)
+            return self._mids_cache
+
+        out = super().all_mids(dex)
+        if ttl > 0:
+            self._mids_cache = dict(out) if isinstance(out, dict) else out
+            self._mids_cache_dex = dex
+            self._mids_cache_mono = now
+        if isinstance(out, dict):
+            return dict(out)
+        return out
 
     def post(self, url_path: str, payload: Any = None) -> Any:
         cfg = self._rate_cfg
