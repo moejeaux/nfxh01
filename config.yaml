@@ -5,8 +5,8 @@
 
 hyperliquid_api:
   api_base_url: "https://api.hyperliquid.xyz"
-  # Space between all HL REST posts; raise if 429 persists (AceVault scan is many /info calls).
-  min_interval_ms: 115
+  # Space between all HL REST posts. AceVault pulls ~cap+2 /info calls per scan; raise if 429 persists.
+  min_interval_ms: 175
   max_retries_on_429: 8
   backoff_base_seconds: 1.25
   backoff_max_seconds: 120.0
@@ -73,7 +73,7 @@ engines:
 
 acevault:
   # Random subset of scannable perps per cycle (candle fetches). Cuts HL /info volume; null = full universe.
-  max_coins_to_evaluate: 120
+  max_coins_to_evaluate: 72
   default_position_size_usd: 25
   # Fixed distance from entry to stop (percent). Immutable after position creation; risk layer rejects widening.
   # Tightened per Fathom retrospective (ranging-market loss cluster); stay at or below 0.3% ceiling.
