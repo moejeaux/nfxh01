@@ -175,6 +175,15 @@ class AceVaultEngine:
                 annualized_carry=enriched["annualized_carry"],
                 funding_trend=enriched["funding_trend"],
             )
+            logger.info(
+                "ACEVAULT_FUNDING_CONTEXT coin=%s funding_rate=%.8f predicted_rate=%.8f "
+                "annualized_carry=%.6f funding_trend=%s",
+                signal.coin,
+                signal.funding_rate,
+                signal.predicted_rate,
+                signal.annualized_carry,
+                signal.funding_trend,
+            )
             risk_decision = self.risk_layer.validate(signal, "acevault")
             if not risk_decision.approved:
                 logger.info(
