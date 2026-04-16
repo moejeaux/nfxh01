@@ -101,6 +101,122 @@ def try_parse_analysis_json(raw: str) -> dict[str, Any] | None:
     return None
 
 
+def compute_next_retrospective_wait_seconds(
+    last_run_at: datetime | None,
+    now: datetime,
+    interval_hours: int,
+    initial_delay_seconds: float,
+    catch_up_min_delay_seconds: float,
+) -> float:
+    """Seconds to wait before the next retrospective (first run or steady cadence)."""
+    interval = max(1, int(interval_hours)) * 3600.0
+    catch_up = max(0.0, float(catch_up_min_delay_seconds))
+    initial = max(0.0, float(initial_delay_seconds))
+    if last_run_at is None:
+        return initial
+    last = last_run_at
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    else:
+        last = last.astimezone(timezone.utc)
+    now_utc = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    if now_utc.tzinfo:
+        now_utc = now_utc.astimezone(timezone.utc)
+    elapsed = (now_utc - last).total_seconds()
+    if elapsed >= interval:
+        return catch_up
+    return max(catch_up, interval - elapsed)
+
+
+async def _wait_retro_shutdown(
+    shutdown_event: asyncio.Event, seconds: float
+) -> bool:
+    """Return True if shutdown was signaled during the wait."""
+    if seconds <= 0:
+        return shutdown_event.is_set()
+    try:
+        await asyncio.wait_for(shutdown_event.wait(), timeout=seconds)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+async def run_embedded_retrospective_loop(
+    config: dict,
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Background task: run six-hour retrospective on a fixed cadence while the agent runs."""
+    fr = config.get("fathom_retrospective") or {}
+    if not fr.get("enabled", False):
+        logger.info("%s_EMBED_SKIP reason=fathom_retrospective.disabled", _RETRO_LOG)
+        return
+    if not fr.get("embed_in_main_process", True):
+        logger.info("%s_EMBED_SKIP reason=embed_in_main_process.false", _RETRO_LOG)
+        return
+
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        logger.warning("%s_EMBED_SKIP reason=DATABASE_URL_missing", _RETRO_LOG)
+        return
+
+    interval_h = int(fr.get("run_interval_hours", 6))
+    initial_delay = float(fr.get("initial_delay_seconds", 120))
+    catch_up_min = float(fr.get("catch_up_min_delay_seconds", 5))
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+
+    logger.info(
+        "%s_EMBED_STARTED interval_hours=%d initial_delay_s=%.0f",
+        _RETRO_LOG,
+        interval_h,
+        initial_delay,
+    )
+
+    first = True
+    try:
+        while not shutdown_event.is_set():
+            if first:
+                last_at: datetime | None = None
+                j = DecisionJournal(db_url)
+                try:
+                    await j.connect()
+                    recent = await j.get_recent_retrospectives(1)
+                    if recent:
+                        ca = recent[0].get("created_at")
+                        if isinstance(ca, datetime):
+                            last_at = ca
+                except Exception as e:
+                    logger.warning("%s_EMBED_LAST_RUN_QUERY_FAILED error=%s", _RETRO_LOG, e)
+                finally:
+                    await j.close()
+
+                now = datetime.now(timezone.utc)
+                wait = compute_next_retrospective_wait_seconds(
+                    last_at,
+                    now,
+                    interval_h,
+                    initial_delay,
+                    catch_up_min,
+                )
+                first = False
+            else:
+                wait = float(interval_h * 3600)
+
+            if await _wait_retro_shutdown(shutdown_event, wait):
+                break
+
+            try:
+                code = await run_six_hour_retrospective(config, db_url, ollama_url)
+                logger.info("%s_EMBED_RUN_DONE exit_code=%d", _RETRO_LOG, code)
+            except asyncio.CancelledError:
+                logger.info("%s_EMBED_CANCELLED during_run", _RETRO_LOG)
+                raise
+            except Exception as e:
+                logger.error("%s_EMBED_RUN_FAILED error=%s", _RETRO_LOG, e, exc_info=True)
+    except asyncio.CancelledError:
+        logger.info("%s_EMBED_CANCELLED", _RETRO_LOG)
+        raise
+
+
 def _build_prompt(
     *,
     window_start: datetime,

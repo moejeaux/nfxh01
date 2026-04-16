@@ -126,6 +126,11 @@ fathom:
 
 fathom_retrospective:
   enabled: true
+  # When true, NXFH01 main process runs the 6h retrospective on a timer (no separate cron).
+  embed_in_main_process: true
+  run_interval_hours: 6
+  initial_delay_seconds: 120
+  catch_up_min_delay_seconds: 5
   deep_model: fathom-r1-14b
   lookback_hours: 6
   max_decision_rows: 200

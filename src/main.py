@@ -4,6 +4,7 @@ import asyncio
 import logging
 import signal
 
+from src.fathom.retrospective import run_embedded_retrospective_loop
 from src.nxfh01.runtime import (
     VERSION,
     _log_startup_sequence,
@@ -37,28 +38,40 @@ async def main() -> None:
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
-    while not shutdown_event.is_set():
-        try:
-            summary = await orchestrator.run_tick()
-            ran = sum(1 for r in summary.strategy_results if r.ran)
-            logger.info(
-                "NXFH01_CYCLE_COMPLETE strategies_ran=%d raw_events=%d tick_ms=%.2f "
-                "track_a_submitted=%d track_a_registered=%d",
-                ran,
-                sum(r.raw_result_count for r in summary.strategy_results),
-                summary.tick_duration_ms,
-                summary.track_a_submitted,
-                summary.track_a_registered,
-            )
-        except Exception as e:
-            logger.error("NXFH01_CYCLE_ERROR error=%s", e, exc_info=True)
+    retro_task = asyncio.create_task(
+        run_embedded_retrospective_loop(config, shutdown_event),
+        name="fathom_retrospective_embedded",
+    )
 
+    try:
+        while not shutdown_event.is_set():
+            try:
+                summary = await orchestrator.run_tick()
+                ran = sum(1 for r in summary.strategy_results if r.ran)
+                logger.info(
+                    "NXFH01_CYCLE_COMPLETE strategies_ran=%d raw_events=%d tick_ms=%.2f "
+                    "track_a_submitted=%d track_a_registered=%d",
+                    ran,
+                    sum(r.raw_result_count for r in summary.strategy_results),
+                    summary.tick_duration_ms,
+                    summary.track_a_submitted,
+                    summary.track_a_registered,
+                )
+            except Exception as e:
+                logger.error("NXFH01_CYCLE_ERROR error=%s", e, exc_info=True)
+
+            try:
+                await asyncio.wait_for(
+                    shutdown_event.wait(),
+                    timeout=tick_interval,
+                )
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        retro_task.cancel()
         try:
-            await asyncio.wait_for(
-                shutdown_event.wait(),
-                timeout=tick_interval,
-            )
-        except asyncio.TimeoutError:
+            await retro_task
+        except asyncio.CancelledError:
             pass
 
     logger.info("NXFH01_SHUTDOWN_COMPLETE")

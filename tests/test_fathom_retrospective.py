@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,7 +10,9 @@ import pytest
 
 from src.fathom.retrospective import (
     build_decisions_digest,
+    compute_next_retrospective_wait_seconds,
     format_retrospective_telegram_message,
+    run_embedded_retrospective_loop,
     run_six_hour_retrospective,
     serialize_decisions_for_prompt,
     try_parse_analysis_json,
@@ -66,6 +69,58 @@ def test_try_parse_analysis_json_embedded():
     raw = 'Intro\n{"summary": "ok", "carry_over": []}\n'
     out = try_parse_analysis_json(raw)
     assert out == {"summary": "ok", "carry_over": []}
+
+
+def test_compute_next_retrospective_wait_seconds_no_prior():
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    w = compute_next_retrospective_wait_seconds(None, now, 6, 120.0, 5.0)
+    assert w == 120.0
+
+
+def test_compute_next_retrospective_wait_seconds_stale():
+    last = datetime(2026, 1, 1, 4, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    w = compute_next_retrospective_wait_seconds(last, now, 6, 120.0, 5.0)
+    assert w == 5.0
+
+
+def test_compute_next_retrospective_wait_seconds_within_interval():
+    last = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    w = compute_next_retrospective_wait_seconds(last, now, 6, 120.0, 5.0)
+    assert w == 4 * 3600.0
+
+
+def test_compute_next_retrospective_wait_seconds_naive_last_treated_utc():
+    last = datetime(2026, 1, 1, 10, 0)  # naive
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    w = compute_next_retrospective_wait_seconds(last, now, 6, 120.0, 5.0)
+    assert w == 4 * 3600.0
+
+
+@pytest.mark.asyncio
+async def test_run_embedded_retrospective_loop_skips_disabled():
+    ev = asyncio.Event()
+    config = {"fathom_retrospective": {"enabled": False}}
+    await run_embedded_retrospective_loop(config, ev)
+
+
+@pytest.mark.asyncio
+async def test_run_embedded_retrospective_loop_skips_embed_flag(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@localhost/db")
+    ev = asyncio.Event()
+    config = {
+        "fathom_retrospective": {"enabled": True, "embed_in_main_process": False},
+    }
+    await run_embedded_retrospective_loop(config, ev)
+
+
+@pytest.mark.asyncio
+async def test_run_embedded_retrospective_loop_skips_no_database_url(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    ev = asyncio.Event()
+    config = {"fathom_retrospective": {"enabled": True, "embed_in_main_process": True}}
+    await run_embedded_retrospective_loop(config, ev)
 
 
 def test_serialize_decisions_for_prompt_truncation():
