@@ -1,0 +1,25 @@
+{
+  "name": "acp-buyer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@aa-sdk/core": "^4.84.1",
+    "@account-kit/infra": "^4.84.1",
+    "@account-kit/smart-contracts": "^4.84.1",
+    "@virtuals-protocol/acp-node-v2": "^0.0.4",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "viem": "^2.47.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

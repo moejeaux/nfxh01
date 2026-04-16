@@ -49,3 +49,6 @@ htmlcov/
 # Project-specific
 .next/
 .cursor/
+
+# Node (ACP buyer sidecar)
+services/acp-buyer/node_modules/

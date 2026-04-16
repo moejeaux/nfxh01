@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from src.acp.degen_claw import AcpCloseRequest, AcpTradeRequest
 from src.engines.acevault.entry import EntryManager
 from src.engines.acevault.exit import AceExit, ExitManager
 from src.engines.acevault.models import AcePosition, AceSignal
+from src.nxfh01.funding_context import enrich_funding_context as enrich_fc
 from src.engines.acevault.scanner import AltScanner
 from src.regime.detector import RegimeDetector
 from src.regime.models import RegimeType
@@ -165,6 +167,14 @@ class AceVaultEngine:
             signal = self._entry_manager.should_enter(candidate, regime_state, weight)
             if signal is None:
                 continue
+            enriched = enrich_fc(candidate.coin, dataclasses.asdict(signal))
+            signal = dataclasses.replace(
+                signal,
+                funding_rate=enriched["funding_rate"],
+                predicted_rate=enriched["predicted_rate"],
+                annualized_carry=enriched["annualized_carry"],
+                funding_trend=enriched["funding_trend"],
+            )
             risk_decision = self.risk_layer.validate(signal, "acevault")
             if not risk_decision.approved:
                 logger.info(
