@@ -42,7 +42,7 @@ def base_config():
             "min_weakness_score": 0.3,
             "max_concurrent_positions": 5,
             "max_hold_minutes": 240,
-            "cycle_interval_seconds": 30,
+            "cycle_interval_seconds": 15,
             "verification_size_usd": 50,
             "regime_weights": {
                 "trending_up": 0.4,
@@ -66,7 +66,7 @@ def base_config():
             "min_available_capital_usd": 10.50,
         },
         "orchestration": {
-            "tick_interval_seconds": 30,
+            "tick_interval_seconds": 15,
             "execution_order": ["acevault", "growi_hf", "mc_recovery"],
             "conflict": {
                 "mode": "skip_opposing",
@@ -263,7 +263,7 @@ class TestStartupLogSequence:
 
         ready_msgs = [r.message for r in caplog.records if "NXFH01_READY" in r.message]
         assert len(ready_msgs) >= 1
-        assert "cycles_per_minute=2.0" in ready_msgs[0]
+        assert "cycles_per_minute=4.0" in ready_msgs[0]
 
     def test_cycles_per_minute_with_different_interval(self, ctx, caplog):
         ctx["config"]["acevault"]["cycle_interval_seconds"] = 60
