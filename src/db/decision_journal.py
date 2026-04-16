@@ -17,10 +17,28 @@ class DecisionJournal:
         self._db_url = database_url
         self._pool = None  # asyncpg pool
 
-    async def connect(self) -> None:
-        """Initialize the connection pool."""
-        self._pool = await asyncpg.create_pool(self._db_url)
-        logger.info("DECISION_JOURNAL_CONNECTED pool_initialized=true")
+    def is_connected(self) -> bool:
+        return self._pool is not None
+
+    async def connect(self, config: dict | None = None) -> None:
+        """Initialize the connection pool (sizes from ``config['database']``)."""
+        db = (config or {}).get("database")
+        if db is None:
+            raise ValueError("config['database'] is required for DecisionJournal.connect")
+        min_s = int(db["pool_min_size"])
+        max_s = int(db["pool_max_size"])
+        if min_s < 1 or max_s < min_s:
+            raise ValueError("database pool_min_size/pool_max_size invalid")
+        self._pool = await asyncpg.create_pool(
+            self._db_url,
+            min_size=min_s,
+            max_size=max_s,
+        )
+        logger.info(
+            "DECISION_JOURNAL_CONNECTED pool_initialized=true min=%d max=%d",
+            min_s,
+            max_s,
+        )
 
     async def log_entry(self, signal: AceSignal, fathom_result: dict | None = None) -> str:
         """Insert entry decision into acevault_decisions table, return UUID as string."""

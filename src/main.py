@@ -39,7 +39,12 @@ async def main() -> None:
     signal.signal(signal.SIGINT, handle_shutdown)
 
     retro_task = asyncio.create_task(
-        run_embedded_retrospective_loop(config, shutdown_event),
+        run_embedded_retrospective_loop(
+            config,
+            shutdown_event,
+            shared_journal=ctx.get("journal"),
+            hl_client=ctx.get("hl_client"),
+        ),
         name="fathom_retrospective_embedded",
     )
 

@@ -162,7 +162,7 @@ async def test_run_six_hour_retrospective_success(monkeypatch):
         }
 
     monkeypatch.setattr("src.fathom.retrospective.fetch_real_market_data", fake_fetch)
-    monkeypatch.setattr("src.fathom.retrospective._make_hl_client", lambda: MagicMock())
+    monkeypatch.setattr("src.fathom.retrospective._make_hl_client", lambda _c: MagicMock())
 
     journal = MagicMock()
     journal.connect = AsyncMock()
@@ -190,6 +190,59 @@ async def test_run_disabled_returns_zero():
         config, "postgresql://x/x", "http://localhost:11434"
     )
     assert code == 0
+
+
+@pytest.mark.asyncio
+async def test_run_six_hour_shared_journal_does_not_close(monkeypatch):
+    config = {
+        "fathom_retrospective": {
+            "enabled": True,
+            "deep_model": "test-model",
+            "lookback_hours": 6,
+            "max_decision_rows": 10,
+            "timeout_seconds": 30,
+            "num_predict": 100,
+            "temperature": 0.0,
+            "previous_runs_in_prompt": 0,
+            "max_decisions_prompt_chars": 5000,
+        },
+        "regime": {
+            "btc_1h_risk_off_threshold": -0.02,
+            "btc_vol_risk_off_threshold": 0.008,
+            "btc_4h_trend_threshold": 0.015,
+            "btc_vol_trend_threshold": 0.006,
+            "min_transition_interval_minutes": 15,
+        },
+    }
+
+    async def fake_fetch(_hl):
+        return {
+            "btc_1h_return": 0.001,
+            "btc_4h_return": 0.002,
+            "btc_vol_1h": 0.01,
+            "funding_rate": 0.01,
+        }
+
+    monkeypatch.setattr("src.fathom.retrospective.fetch_real_market_data", fake_fetch)
+    shared = MagicMock()
+    shared.is_connected.return_value = True
+    shared.fetch_decisions_in_window = AsyncMock(return_value=[])
+    shared.get_recent_retrospectives = AsyncMock(return_value=[])
+    shared.insert_retrospective_run = AsyncMock(return_value="shared-uuid")
+    shared.close = AsyncMock()
+
+    with patch("src.fathom.retrospective.httpx.AsyncClient", _FakeOllamaHttpClient):
+        code = await run_six_hour_retrospective(
+            config,
+            "postgresql://x/x",
+            "http://localhost:11434",
+            shared_journal=shared,
+            hl_client=MagicMock(),
+        )
+
+    assert code == 0
+    shared.close.assert_not_called()
+    shared.insert_retrospective_run.assert_called_once()
 
 
 def test_format_retrospective_telegram_message_json():
@@ -260,7 +313,7 @@ async def test_telegram_skipped_when_disabled(monkeypatch):
 
     monkeypatch.setattr("src.fathom.retrospective.fetch_real_market_data", _fake_fetch)
     monkeypatch.setattr(
-        "src.fathom.retrospective._make_hl_client", lambda: MagicMock()
+        "src.fathom.retrospective._make_hl_client", lambda _c: MagicMock()
     )
     journal = MagicMock()
     journal.connect = AsyncMock()
@@ -320,7 +373,7 @@ async def test_telegram_sent_when_enabled(monkeypatch):
 
     monkeypatch.setattr("src.fathom.retrospective.fetch_real_market_data", _fake_fetch)
     monkeypatch.setattr(
-        "src.fathom.retrospective._make_hl_client", lambda: MagicMock()
+        "src.fathom.retrospective._make_hl_client", lambda _c: MagicMock()
     )
     journal = MagicMock()
     journal.connect = AsyncMock()

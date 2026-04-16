@@ -71,10 +71,15 @@ async def test_connect_creates_pool(decision_journal):
     with patch("src.db.decision_journal.asyncpg.create_pool", new_callable=AsyncMock) as mock_create_pool:
         mock_pool = AsyncMock()
         mock_create_pool.return_value = mock_pool
-        
-        await decision_journal.connect()
-        
-        mock_create_pool.assert_called_once_with("postgresql://test:test@localhost/test")
+
+        cfg = {"database": {"pool_min_size": 1, "pool_max_size": 2}}
+        await decision_journal.connect(cfg)
+
+        mock_create_pool.assert_called_once_with(
+            "postgresql://test:test@localhost/test",
+            min_size=1,
+            max_size=2,
+        )
         assert decision_journal._pool is mock_pool
 
 

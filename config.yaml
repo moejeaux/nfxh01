@@ -2,6 +2,19 @@
 #
 # Multi-strategy orchestration: global tick sleeps ``tick_interval_seconds``; each strategy
 # runs only when its own ``cycle_interval_seconds`` has elapsed (see ``strategies``).
+
+hyperliquid_api:
+  api_base_url: "https://api.hyperliquid.xyz"
+  min_interval_ms: 85
+  max_retries_on_429: 8
+  backoff_base_seconds: 1.25
+  backoff_max_seconds: 120.0
+  backoff_jitter_ratio: 0.35
+
+database:
+  pool_min_size: 1
+  pool_max_size: 4
+
 orchestration:
   tick_interval_seconds: 15
   # When true, post-conflict NormalizedEntryIntent list is executed via UnifiedRiskLayer + DegenClaw.

@@ -76,10 +76,15 @@ async def test_connect_initializes_pool(decision_journal):
     with pytest.MonkeyPatch().context() as m:
         mock_create_pool = AsyncMock()
         m.setattr("asyncpg.create_pool", mock_create_pool)
-        
-        await decision_journal.connect()
-        
-        mock_create_pool.assert_called_once_with("postgresql://test:test@localhost/test")
+
+        cfg = {"database": {"pool_min_size": 1, "pool_max_size": 3}}
+        await decision_journal.connect(cfg)
+
+        mock_create_pool.assert_called_once_with(
+            "postgresql://test:test@localhost/test",
+            min_size=1,
+            max_size=3,
+        )
         assert decision_journal._pool is not None
 
 

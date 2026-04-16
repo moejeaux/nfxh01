@@ -11,8 +11,6 @@ from typing import Any
 
 import yaml
 from dotenv import load_dotenv
-from hyperliquid.info import Info
-
 from src.acp.degen_claw import DegenClawAcp as DegenClawExecutor
 from src.db.decision_journal import DecisionJournal
 from src.engines.acevault.engine import AceVaultEngine
@@ -24,6 +22,7 @@ from src.nxfh01.orchestration.config_validation import validate_multi_strategy_c
 from src.nxfh01.orchestration.strategy_orchestrator import StrategyOrchestrator
 from src.nxfh01.orchestration.strategy_registry import StrategyRegistry
 from src.nxfh01.orchestration.track_a_executor import TrackAExecutor
+from src.market_data.hl_rate_limited_info import RateLimitedInfo
 from src.regime.detector import RegimeDetector
 from src.risk.engine_killswitch import KillSwitch
 from src.risk.portfolio_state import PortfolioState
@@ -42,10 +41,16 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
-async def init_hl_client() -> Info:
+async def init_hl_client(config: dict) -> RateLimitedInfo:
+    hl_api = config["hyperliquid_api"]
+    base_url = hl_api["api_base_url"]
     for attempt in range(5):
         try:
-            client = Info(base_url="https://api.hyperliquid.xyz", skip_ws=True)
+            client = RateLimitedInfo(
+                base_url=base_url,
+                skip_ws=True,
+                rate_config=hl_api,
+            )
             logger.info("HL_CLIENT_INITIALIZED attempt=%d", attempt + 1)
             return client
         except Exception as e:
@@ -109,7 +114,7 @@ async def build_context(config: dict) -> dict:
     portfolio_state = PortfolioState()
     risk_layer = UnifiedRiskLayer(config, portfolio_state, kill_switch)
 
-    hl_client = await init_hl_client()
+    hl_client = await init_hl_client(config)
     regime_detector = RegimeDetector(config, data_fetcher=None)
 
     journal = None
@@ -117,7 +122,7 @@ async def build_context(config: dict) -> dict:
     if database_url:
         try:
             journal = DecisionJournal(database_url)
-            await journal.connect()
+            await journal.connect(config)
             logger.info("DECISION_JOURNAL_CONNECTED")
         except Exception as e:
             logger.warning(

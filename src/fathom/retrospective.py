@@ -14,9 +14,9 @@ from typing import Any
 import httpx
 import yaml
 from dotenv import load_dotenv
-from hyperliquid.info import Info
 
 from src.db.decision_journal import DecisionJournal
+from src.market_data.hl_rate_limited_info import RateLimitedInfo
 from src.market_data.hyperliquid_btc import fetch_real_market_data
 from src.notifications.telegram import TelegramBot
 from src.regime.detector import RegimeDetector
@@ -144,6 +144,9 @@ async def _wait_retro_shutdown(
 async def run_embedded_retrospective_loop(
     config: dict,
     shutdown_event: asyncio.Event,
+    *,
+    shared_journal: DecisionJournal | None = None,
+    hl_client: Any | None = None,
 ) -> None:
     """Background task: run six-hour retrospective on a fixed cadence while the agent runs."""
     fr = config.get("fathom_retrospective") or {}
@@ -165,10 +168,11 @@ async def run_embedded_retrospective_loop(
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
     logger.info(
-        "%s_EMBED_STARTED interval_hours=%d initial_delay_s=%.0f",
+        "%s_EMBED_STARTED interval_hours=%d initial_delay_s=%.0f shared_journal=%s",
         _RETRO_LOG,
         interval_h,
         initial_delay,
+        shared_journal is not None and shared_journal.is_connected(),
     )
 
     first = True
@@ -176,18 +180,32 @@ async def run_embedded_retrospective_loop(
         while not shutdown_event.is_set():
             if first:
                 last_at: datetime | None = None
-                j = DecisionJournal(db_url)
-                try:
-                    await j.connect()
-                    recent = await j.get_recent_retrospectives(1)
-                    if recent:
-                        ca = recent[0].get("created_at")
-                        if isinstance(ca, datetime):
-                            last_at = ca
-                except Exception as e:
-                    logger.warning("%s_EMBED_LAST_RUN_QUERY_FAILED error=%s", _RETRO_LOG, e)
-                finally:
-                    await j.close()
+                if shared_journal is not None and shared_journal.is_connected():
+                    try:
+                        recent = await shared_journal.get_recent_retrospectives(1)
+                        if recent:
+                            ca = recent[0].get("created_at")
+                            if isinstance(ca, datetime):
+                                last_at = ca
+                    except Exception as e:
+                        logger.warning(
+                            "%s_EMBED_LAST_RUN_QUERY_FAILED error=%s", _RETRO_LOG, e
+                        )
+                else:
+                    j = DecisionJournal(db_url)
+                    try:
+                        await j.connect(config)
+                        recent = await j.get_recent_retrospectives(1)
+                        if recent:
+                            ca = recent[0].get("created_at")
+                            if isinstance(ca, datetime):
+                                last_at = ca
+                    except Exception as e:
+                        logger.warning(
+                            "%s_EMBED_LAST_RUN_QUERY_FAILED error=%s", _RETRO_LOG, e
+                        )
+                    finally:
+                        await j.close()
 
                 now = datetime.now(timezone.utc)
                 wait = compute_next_retrospective_wait_seconds(
@@ -205,7 +223,13 @@ async def run_embedded_retrospective_loop(
                 break
 
             try:
-                code = await run_six_hour_retrospective(config, db_url, ollama_url)
+                code = await run_six_hour_retrospective(
+                    config,
+                    db_url,
+                    ollama_url,
+                    shared_journal=shared_journal,
+                    hl_client=hl_client,
+                )
                 logger.info("%s_EMBED_RUN_DONE exit_code=%d", _RETRO_LOG, code)
             except asyncio.CancelledError:
                 logger.info("%s_EMBED_CANCELLED during_run", _RETRO_LOG)
@@ -265,8 +289,13 @@ Respond with a short prose section, then a FINAL JSON object only (no markdown f
 """
 
 
-def _make_hl_client() -> Info:
-    return Info(base_url="https://api.hyperliquid.xyz", skip_ws=True)
+def _make_hl_client(config: dict) -> RateLimitedInfo:
+    hl = config["hyperliquid_api"]
+    return RateLimitedInfo(
+        base_url=hl["api_base_url"],
+        skip_ws=True,
+        rate_config=hl,
+    )
 
 
 def format_retrospective_telegram_message(
@@ -357,6 +386,9 @@ async def run_six_hour_retrospective(
     config: dict,
     database_url: str,
     ollama_base_url: str,
+    *,
+    shared_journal: DecisionJournal | None = None,
+    hl_client: Any | None = None,
 ) -> int:
     """Run one retrospective; return process exit code (0 ok, 1 error)."""
     fr = config.get("fathom_retrospective") or {}
@@ -385,14 +417,21 @@ async def run_six_hour_retrospective(
         deep_model,
     )
 
-    journal = DecisionJournal(database_url)
-    await journal.connect()
+    own_journal = shared_journal is None
+    if own_journal:
+        journal = DecisionJournal(database_url)
+        await journal.connect(config)
+    else:
+        journal = shared_journal
+        if not journal.is_connected():
+            logger.error("%s_ABORT reason=shared_journal_not_connected", _RETRO_LOG)
+            return 1
 
     try:
         market_data: dict[str, Any]
         try:
-            hl = _make_hl_client()
-            market_data = await fetch_real_market_data(hl)
+            hl_for_fetch = hl_client if hl_client is not None else _make_hl_client(config)
+            market_data = await fetch_real_market_data(hl_for_fetch)
         except Exception as e:
             logger.warning("%s_MARKET_INIT_FAILED error=%s using_fallback", _RETRO_LOG, e)
             market_data = {
@@ -501,7 +540,8 @@ async def run_six_hour_retrospective(
 
         return 0
     finally:
-        await journal.close()
+        if own_journal:
+            await journal.close()
 
 
 def main() -> int:

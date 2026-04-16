@@ -17,6 +17,15 @@ from src.nxfh01.orchestration.types import OrchestratorTickSummary, StrategyTick
 @pytest.fixture
 def base_config():
     return {
+        "hyperliquid_api": {
+            "api_base_url": "https://api.hyperliquid.xyz",
+            "min_interval_ms": 85,
+            "max_retries_on_429": 8,
+            "backoff_base_seconds": 1.25,
+            "backoff_max_seconds": 120.0,
+            "backoff_jitter_ratio": 0.35,
+        },
+        "database": {"pool_min_size": 1, "pool_max_size": 4},
         "engines": {
             "planned_count": 5,
             "acevault": {"loss_pct": 0.03, "cooldown_hours": 4},
