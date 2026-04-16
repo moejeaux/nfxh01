@@ -19,7 +19,7 @@ def base_config():
     return {
         "hyperliquid_api": {
             "api_base_url": "https://api.hyperliquid.xyz",
-            "min_interval_ms": 85,
+            "min_interval_ms": 115,
             "max_retries_on_429": 8,
             "backoff_base_seconds": 1.25,
             "backoff_max_seconds": 120.0,
@@ -37,6 +37,7 @@ def base_config():
             "take_profit_distance_pct": 2.7,
             "ranging_min_weakness_score": 0.45,
             "min_volume_ratio": 0.8,
+            "max_coins_to_evaluate": 120,
             "max_candidates": 5,
             "min_weakness_score": 0.3,
             "max_concurrent_positions": 5,

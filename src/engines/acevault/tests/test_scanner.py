@@ -1,4 +1,5 @@
 import logging
+import random
 
 import pytest
 from unittest.mock import Mock, patch
@@ -55,6 +56,46 @@ def mock_hl_client():
     
     client.candles_snapshot.side_effect = candles_side_effect
     return client
+
+
+def test_scan_respects_max_coins_to_evaluate(mock_hl_client):
+    """Capping coins limits candles_snapshot volume (reduces HL /info 429 pressure)."""
+    mock_config = {"acevault": {"max_candidates": 3, "max_coins_to_evaluate": 2}}
+    mock_hl_client.all_mids.return_value = {
+        "BTC": "80000",
+        "ETH": "3000",
+        "SOL": "150",
+        "AA": "1",
+        "BB": "2",
+        "CC": "3",
+        "DD": "4",
+        "EE": "5",
+    }
+
+    def candles_side_effect(coin, interval, startTime, endTime):
+        base = 1.0
+        candles = []
+        for i in range(24):
+            price = base * (1 + (i - 12) * 0.001)
+            candles.append({
+                "o": str(price * 0.999),
+                "h": str(price * 1.002),
+                "l": str(price * 0.998),
+                "c": str(price),
+                "v": str(1000 + i * 10),
+            })
+        return candles
+
+    mock_hl_client.candles_snapshot.side_effect = candles_side_effect
+    random.seed(0)
+    scanner = AltScanner(mock_config, mock_hl_client)
+
+    with patch("src.engines.acevault.scanner.compute_alt_btc_ratio", return_value=-0.05), patch(
+        "src.engines.acevault.scanner.compute_volatility", return_value=0.02
+    ):
+        scanner.scan()
+
+    assert mock_hl_client.candles_snapshot.call_count == 3
 
 
 def test_scan_excludes_btc_eth_sol(mock_config, mock_hl_client):

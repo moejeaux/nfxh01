@@ -1,4 +1,5 @@
 import logging
+import random
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -37,12 +38,31 @@ class AltScanner:
                      sum(1 for c in markets if c.startswith("@")),
                      scannable)
 
-        candidates: list[AltCandidate] = []
+        coin_list: list[str] = []
         for coin in markets:
             if coin in EXCLUDED_COINS:
                 continue
             if "/" in coin or coin.startswith("@"):
                 continue
+            coin_list.append(coin)
+
+        cap_raw = self.config["acevault"].get("max_coins_to_evaluate")
+        if cap_raw is not None:
+            try:
+                cap_i = int(cap_raw)
+            except (TypeError, ValueError):
+                cap_i = 0
+            universe_n = len(coin_list)
+            if cap_i > 0 and len(coin_list) > cap_i:
+                coin_list = random.sample(coin_list, cap_i)
+                logger.info(
+                    "ACEVAULT_SCAN_COIN_CAP universe=%d evaluating=%d",
+                    universe_n,
+                    cap_i,
+                )
+
+        candidates: list[AltCandidate] = []
+        for coin in coin_list:
             try:
                 result = self._compute_weakness_score(coin, markets)
             except Exception as e:
