@@ -30,12 +30,14 @@ orchestration:
     - acevault
     - growi_hf
     - mc_recovery
+    - btc_lanes
   conflict:
     mode: skip_opposing
     priority:
       - acevault
       - growi_hf
       - mc_recovery
+      - btc_lanes
 
 strategies:
   acevault:
@@ -60,6 +62,11 @@ strategies:
     cycle_interval_seconds: 120
     max_candidates: 3
     default_leverage: 1
+  btc_lanes:
+    enabled: true
+    engine_id: btc_lanes
+    cycle_interval_seconds: 60
+    default_leverage: 1
 
 engines:
   planned_count: 5
@@ -79,6 +86,9 @@ engines:
   eternal:
     loss_pct: 0.02
     cooldown_hours: 12
+  btc_lanes:
+    loss_pct: 0.03
+    cooldown_hours: 4
 
 acevault:
   # Random subset of scannable perps per cycle (candle fetches). Cuts HL /info volume; null = full universe.

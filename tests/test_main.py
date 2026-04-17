@@ -32,6 +32,7 @@ def base_config():
             "acevault": {"loss_pct": 0.03, "cooldown_hours": 4},
             "growi": {"loss_pct": 0.04, "cooldown_hours": 6},
             "mc": {"loss_pct": 0.02, "cooldown_hours": 2},
+            "btc_lanes": {"loss_pct": 0.03, "cooldown_hours": 4},
         },
         "acevault": {
             "stop_loss_distance_pct": 0.3,
@@ -68,16 +69,17 @@ def base_config():
         },
         "orchestration": {
             "tick_interval_seconds": 15,
-            "execution_order": ["acevault", "growi_hf", "mc_recovery"],
+            "execution_order": ["acevault", "growi_hf", "mc_recovery", "btc_lanes"],
             "conflict": {
                 "mode": "skip_opposing",
-                "priority": ["acevault", "growi_hf", "mc_recovery"],
+                "priority": ["acevault", "growi_hf", "mc_recovery", "btc_lanes"],
             },
         },
         "strategies": {
             "acevault": {"enabled": True, "engine_id": "acevault"},
             "growi_hf": {"enabled": False, "engine_id": "growi"},
             "mc_recovery": {"enabled": False, "engine_id": "mc"},
+            "btc_lanes": {"enabled": False, "engine_id": "btc_lanes"},
         },
     }
 
@@ -121,7 +123,12 @@ def ctx(base_config):
     orch = StrategyOrchestrator(
         base_config,
         reg,
-        {"acevault": acevault_engine.run_cycle, "growi_hf": AsyncMock(return_value=[]), "mc_recovery": AsyncMock(return_value=[])},
+        {
+            "acevault": acevault_engine.run_cycle,
+            "growi_hf": AsyncMock(return_value=[]),
+            "mc_recovery": AsyncMock(return_value=[]),
+            "btc_lanes": AsyncMock(return_value=[]),
+        },
     )
     return {
         "config": base_config,
@@ -162,6 +169,7 @@ class TestBuildContext:
             "acevault_engine",
             "growi_hf_engine",
             "mc_recovery_engine",
+            "btc_lanes_engine",
             "strategy_registry",
             "orchestrator",
             "track_a_executor",

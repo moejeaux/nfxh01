@@ -15,8 +15,10 @@ from src.acp.degen_claw import DegenClawAcp as DegenClawExecutor
 from src.db.decision_journal import DecisionJournal
 from src.engines.acevault.engine import AceVaultEngine
 from src.engines.growi_hf.engine import GrowiHFEngine
+from src.engines.btc_lanes.engine import BTCLanesEngine
 from src.engines.mc_recovery.engine import MCRecoveryEngine
 from src.fathom.advisor import FathomAdvisor
+from src.nxfh01.config_merge import deep_merge
 from src.nxfh01.config_paths import find_config_yaml
 from src.nxfh01.orchestration.config_validation import validate_multi_strategy_config
 from src.exits.manager import LiveExitEngine
@@ -39,7 +41,18 @@ VERSION = "1.0.0"
 def load_config() -> dict:
     config_path = find_config_yaml(Path(__file__))
     with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        root = yaml.safe_load(f)
+    if not isinstance(root, dict):
+        root = {}
+    btc_path = config_path.parent / "config" / "btc_strategy.yaml"
+    if btc_path.is_file():
+        with open(btc_path, encoding="utf-8") as f:
+            btc_raw = yaml.safe_load(f)
+        if isinstance(btc_raw, dict):
+            existing = root.get("btc_strategy")
+            base = existing if isinstance(existing, dict) else {}
+            root["btc_strategy"] = deep_merge(base, btc_raw)
+    return root
 
 
 async def init_hl_client(config: dict) -> RateLimitedInfo:
@@ -180,12 +193,19 @@ async def build_context(config: dict) -> dict:
         kill_switch,
         portfolio_state,
     )
+    btc_lanes_engine = BTCLanesEngine(
+        config,
+        hl_client,
+        kill_switch,
+        portfolio_state,
+    )
 
     registry = StrategyRegistry(config)
     runners = {
         "acevault": acevault_engine.run_cycle,
         "growi_hf": growi_engine.run_cycle,
         "mc_recovery": mc_engine.run_cycle,
+        "btc_lanes": btc_lanes_engine.run_cycle,
     }
     track_a_executor = TrackAExecutor(
         config,
@@ -234,6 +254,7 @@ async def build_context(config: dict) -> dict:
         "acevault_engine": acevault_engine,
         "growi_hf_engine": growi_engine,
         "mc_recovery_engine": mc_engine,
+        "btc_lanes_engine": btc_lanes_engine,
         "strategy_registry": registry,
         "orchestrator": orchestrator,
         "track_a_executor": track_a_executor,

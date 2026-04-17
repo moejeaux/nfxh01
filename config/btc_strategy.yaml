@@ -1,0 +1,55 @@
+# Merged under config root as btc_strategy: (see load_config). All thresholds are referenced from code via this namespace.
+# Tuning pass: conservative rollout (v1.0.1) — tighter regime/supervisor, smaller lane sizes, stricter churn caps, engine risk gates vs total_capital_usd ~10k in main config.
+detector_version: "1.0.1"
+
+thresholds:
+  trend_min: 0.006
+  vol_trend: 1.25
+  extreme_dist_min: 0.011
+  extreme_dist_max: 0.016
+  ema_1h_period: 50
+  ema_4h_period: 50
+  ema_5m_20: 20
+  ema_5m_50: 50
+  atr_5m_period: 14
+  atr_15m_period: 14
+  atr_median_lookback: 20
+  hysteresis_ticks: 5
+  swing_bars: 5
+  structure_bars_5m: 20
+
+supervisor:
+  trend_min_confidence: 0.65
+
+lanes:
+  trend:
+    position_size_usd: 12.0
+    stop_atr_5m_mult: 1.6
+    take_profit_r: 1.0
+    range_high_lookback_bars: 14
+  regression:
+    position_size_usd: 8.0
+    stop_atr_5m_mult: 1.2
+    take_profit_r: 1.0
+    rsi_period: 14
+    rsi_extreme: 74.0
+
+limits:
+  max_opens_per_day_trend: 2
+  max_opens_per_day_regression: 2
+  max_opens_per_session_trend: 2
+  max_opens_per_session_regression: 2
+
+# Engine-local gates (USD). Scale up if total_capital_usd in config.yaml is much larger than ~10k.
+risk_gates:
+  max_daily_loss_usd_btc_engine: 200.0
+  max_btc_gross_usd: 3000.0
+
+data:
+  intervals:
+    - "1h"
+    - "15m"
+    - "5m"
+  min_bars_1h: 60
+  min_bars_15m: 48
+  min_bars_5m: 60

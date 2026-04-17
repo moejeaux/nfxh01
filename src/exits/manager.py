@@ -195,6 +195,8 @@ def _strategy_key_from_engine(engine_id: str, config: dict[str, Any]) -> str:
         return "growi_hf"
     if engine_id == "mc":
         return "mc_recovery"
+    if engine_id == "btc_lanes":
+        return "btc_lanes"
     return "acevault"
 
 

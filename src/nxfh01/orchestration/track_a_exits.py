@@ -35,7 +35,11 @@ def run_track_a_exits(
         logger.warning("EXIT_TRACK_A_MIDS_FAILED error=%s", e)
         return
 
-    for engine_id, strategy_key in (("growi", "growi_hf"), ("mc", "mc_recovery")):
+    for engine_id, strategy_key in (
+        ("growi", "growi_hf"),
+        ("mc", "mc_recovery"),
+        ("btc_lanes", "btc_lanes"),
+    ):
         positions = portfolio_state.get_open_positions(engine_id)
         if not positions:
             continue
