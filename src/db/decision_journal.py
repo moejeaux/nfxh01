@@ -93,6 +93,7 @@ class DecisionJournal:
         job_id: str | None,
         idempotency_key: str,
         leverage_used: int,
+        submitted_position_size_usd: float | None = None,
     ) -> str:
         """Persist a Track A entry decision; ``position_id`` aligns with ``PortfolioState`` registration."""
         if self._pool is None:
@@ -100,6 +101,11 @@ class DecisionJournal:
 
         meta = dict(intent.metadata or {})
         meta["position_id"] = position_id
+        size_db = (
+            float(submitted_position_size_usd)
+            if submitted_position_size_usd is not None
+            else float(intent.position_size_usd)
+        )
 
         query = """
         INSERT INTO strategy_decisions (
@@ -121,7 +127,7 @@ class DecisionJournal:
                 intent.engine_id,
                 intent.coin.strip(),
                 intent.side,
-                float(intent.position_size_usd),
+                size_db,
                 float(entry_price),
                 intent.stop_loss_price,
                 intent.take_profit_price,

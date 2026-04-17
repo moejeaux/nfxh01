@@ -256,3 +256,10 @@ risk:
   # null = no limit on correlated long count (tune later if needed).
   max_correlated_longs: null
   min_available_capital_usd: 10.50
+  # Until last N closed AceVault trades meet PF + avg win/avg |loss| thresholds, scale entries by position_multiplier.
+  safety_mode:
+    enabled: true
+    position_multiplier: 0.1
+    min_closed_trades: 30
+    min_profit_factor: 1.05
+    min_avg_win_loss_ratio: 1.0

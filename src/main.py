@@ -5,6 +5,7 @@ import logging
 import signal
 
 from src.retro.loop import run_embedded_retrospective_loop
+from src.risk.safety_mode import refresh_safety_mode
 from src.nxfh01.runtime import (
     VERSION,
     _log_startup_sequence,
@@ -52,6 +53,15 @@ async def main() -> None:
     try:
         while not shutdown_event.is_set():
             try:
+                try:
+                    await refresh_safety_mode(
+                        ctx["risk_layer"],
+                        ctx["config"],
+                        ctx.get("journal"),
+                    )
+                except Exception as e:
+                    logger.error("RISK_SAFETY_REFRESH_FAILED error=%s", e, exc_info=True)
+
                 summary = await orchestrator.run_tick()
                 ran = sum(1 for r in summary.strategy_results if r.ran)
                 logger.info(

@@ -14,6 +14,13 @@ class UnifiedRiskLayer:
         self._portfolio_state = portfolio_state
         self._kill_switch = kill_switch
         self._risk_cfg = config.get("risk", {})
+        self._safety_position_multiplier = 1.0
+
+    def set_safety_position_multiplier(self, m: float) -> None:
+        self._safety_position_multiplier = float(m)
+
+    def get_safety_position_multiplier(self) -> float:
+        return self._safety_position_multiplier
 
     @property
     def portfolio_state(self) -> PortfolioState:
@@ -24,6 +31,24 @@ class UnifiedRiskLayer:
             reason = f"kill_switch_active:{engine_id}"
             logger.warning("RISK_REJECTED engine=%s reason=%s", engine_id, reason)
             return RiskDecision(approved=False, reason=reason)
+
+        try:
+            base_size = float(signal.position_size_usd)
+        except (TypeError, ValueError):
+            logger.warning(
+                "RISK_REJECTED engine=%s reason=invalid_position_size",
+                engine_id,
+            )
+            return RiskDecision(approved=False, reason="invalid_position_size")
+        signal.position_size_usd = base_size * self._safety_position_multiplier
+        if self._safety_position_multiplier < 1.0:
+            logger.info(
+                "RISK_SAFETY_SIZE_APPLIED engine=%s mult=%.4f base=%.2f adjusted=%.2f",
+                engine_id,
+                self._safety_position_multiplier,
+                base_size,
+                signal.position_size_usd,
+            )
 
         dd = self._portfolio_state.get_portfolio_drawdown_24h()
         max_dd = self._risk_cfg.get("max_portfolio_drawdown_24h", 0.05)

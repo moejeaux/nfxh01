@@ -114,10 +114,11 @@ class TrackAExecutor:
 
             sl = intent.stop_loss_price
             tp = intent.take_profit_price
+            scaled_usd = float(risk_signal.position_size_usd)
             proxy = TrackARiskSignal(
                 coin=intent.coin.strip(),
                 side=intent.side,
-                position_size_usd=float(intent.position_size_usd),
+                position_size_usd=scaled_usd,
                 entry_price=float(ref_px),
                 stop_loss_price=float(sl) if sl is not None else 0.0,
                 take_profit_price=float(tp) if tp is not None else 0.0,
@@ -130,7 +131,7 @@ class TrackAExecutor:
                 req = AcpTradeRequest(
                     coin=intent.coin.strip(),
                     side=intent.side,
-                    size_usd=float(intent.position_size_usd),
+                    size_usd=scaled_usd,
                     leverage=lev,
                     order_type="market",
                     stop_loss=intent.stop_loss_price,
@@ -157,7 +158,7 @@ class TrackAExecutor:
                     intent.coin,
                     intent.side,
                     intent.engine_id,
-                    intent.position_size_usd,
+                    scaled_usd,
                     resp.job_id,
                 )
             except Exception as e:
@@ -188,6 +189,7 @@ class TrackAExecutor:
                         job_id=resp.job_id,
                         idempotency_key=req.idempotency_key,
                         leverage_used=lev,
+                        submitted_position_size_usd=scaled_usd,
                     )
                     journal_logged += 1
                 except Exception as e:

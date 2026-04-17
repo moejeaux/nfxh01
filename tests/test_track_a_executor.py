@@ -139,3 +139,33 @@ async def test_journal_logged_when_configured(base_config):
     summary = await ex.execute([intent])
     assert summary.journal_logged == 1
     journal.log_track_a_entry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_track_a_submit_uses_post_risk_position_size(base_config):
+    ps = PortfolioState()
+    ks = MagicMock()
+    ks.is_active.return_value = False
+    risk = UnifiedRiskLayer(base_config, ps, ks)
+    risk.set_safety_position_multiplier(0.1)
+
+    degen = MagicMock()
+    degen.submit_trade.return_value = MagicMock(success=True, job_id="job1", error=None)
+    hl = MagicMock()
+    hl.all_mids.return_value = {"ETH": "2500.5"}
+
+    ex = TrackAExecutor(base_config, risk, ps, degen, hl)
+    intent = NormalizedEntryIntent(
+        engine_id="growi",
+        strategy_key="growi_hf",
+        coin="ETH",
+        side="long",
+        position_size_usd=100.0,
+        stop_loss_price=2400.0,
+        take_profit_price=2600.0,
+    )
+    await ex.execute([intent])
+    req = degen.submit_trade.call_args[0][0]
+    assert abs(req.size_usd - 10.0) < 1e-9
+    pos = ps.get_open_positions("growi")[0]
+    assert abs(pos.signal.position_size_usd - 10.0) < 1e-9
