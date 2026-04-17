@@ -35,7 +35,9 @@ lanes:
     rsi_extreme: 74.0
 
 risk_gates:
-  # Set to your live Hyperliquid account equity (USD) so pct caps track wallet; null = use risk.total_capital_usd from config.yaml.
+  # HL clearing wallet (for ops); does not replace USD equity for pct gates.
+  wallet_address: "0x68c40e9385506195129522c650a510aa07f07732"
+  # Live account equity in USD for pct caps; null = use risk.total_capital_usd from config.yaml.
   reference_capital_usd: null
   max_daily_loss_pct_of_capital: 0.02
   max_btc_gross_pct_of_capital: 0.30
