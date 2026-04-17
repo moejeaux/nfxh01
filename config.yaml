@@ -188,6 +188,9 @@ learning:
   improve_pf_ratio: 1.05
   auto_apply_min_confidence: 0.75
   revert_pf_worsen_ratio: 0.85
+  # reduce_fathom_acevault_max_mult: factor in (0,1) × current; never above floor.
+  fathom_acevault_max_mult_floor: 1.0
+  fathom_acevault_max_mult_reduce_factor_default: 0.9
 
 exits:
   enabled: true

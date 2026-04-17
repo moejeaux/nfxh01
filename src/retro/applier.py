@@ -17,13 +17,19 @@ from src.intelligence.recommendations import (
     first_low_risk_action,
     validate_advisor_response,
 )
+from src.retro.fathom_mult_apply import compute_fathom_acevault_max_mult_patch
 from src.retro.metrics import RetroMetricsSnapshot
 from src.retro.registry import new_change_id
 
 logger = logging.getLogger(__name__)
 
 DEFENSIVE_ACTIONS = frozenset(
-    {"disable_coin", "reduce_position_size", "lower_max_concurrent_positions"}
+    {
+        "disable_coin",
+        "reduce_position_size",
+        "lower_max_concurrent_positions",
+        "reduce_fathom_acevault_max_mult",
+    }
 )
 
 
@@ -200,6 +206,18 @@ async def maybe_apply_retro_analysis(
             old_snap = {"acevault": {k: old_v}}
             sec[k] = max(1, old_v - 1)
             new_snap = {"acevault": {k: sec[k]}}
+
+        elif action == "reduce_fathom_acevault_max_mult":
+            fh = data.get("fathom")
+            if not isinstance(fh, dict):
+                logger.warning("RETRO_APPLIER_SKIP reason=fathom_section_missing")
+                return
+            planned = compute_fathom_acevault_max_mult_patch(first, fh, learn)
+            if planned is None:
+                return
+            old_snap, new_snap = planned
+            nk = "acevault_max_mult"
+            fh[nk] = new_snap["fathom"][nk]
 
         else:
             return

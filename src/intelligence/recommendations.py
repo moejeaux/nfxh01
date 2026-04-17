@@ -10,6 +10,7 @@ LOW_RISK_ACTIONS = frozenset(
         "reduce_position_size",
         "raise_min_signal_score",
         "lower_max_concurrent_positions",
+        "reduce_fathom_acevault_max_mult",
         "no_action",
     }
 )

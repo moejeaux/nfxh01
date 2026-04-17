@@ -19,7 +19,7 @@ The JSON must match this shape exactly (keys required):
 {
   "schema_version": <int>,
   "diagnosis": "<string: main bottleneck or strength>",
-  "low_risk_actions": [ {"action": "<disable_coin|reduce_position_size|raise_min_signal_score|lower_max_concurrent_positions|no_action>", "target": "<string>", "value": <number|string|null> } ],
+  "low_risk_actions": [ {"action": "<disable_coin|reduce_position_size|raise_min_signal_score|lower_max_concurrent_positions|reduce_fathom_acevault_max_mult|no_action>", "target": "<string>", "value": <number|string|null> } ],
   "high_risk_suggestions": [ {"action": "<string>", "detail": "<string>" } ],
   "confidence": <float 0..1>,
   "evaluation_horizon": "<string, e.g. 25 trades>",
