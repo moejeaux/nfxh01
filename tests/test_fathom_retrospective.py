@@ -321,6 +321,49 @@ def test_format_retrospective_telegram_message_fallback_text():
     assert "JSON parse failed" in msg or "excerpt" in msg
 
 
+def test_format_retrospective_telegram_sparse_json_appends_model_excerpt():
+    ws = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    we = datetime(2025, 1, 1, 6, 0, 0, tzinfo=timezone.utc)
+    msg = format_retrospective_telegram_message(
+        run_id="r1",
+        window_start=ws,
+        window_end=we,
+        analysis_json={"schema_version": 1},
+        analysis_text="Here is the full narrative from the model about PF and next steps.",
+        max_chars=3500,
+    )
+    assert "lookback_h:" in msg
+    assert "schema_version: 1" in msg
+    assert "Model output (excerpt" in msg
+    assert "full narrative" in msg
+
+
+def test_format_retrospective_telegram_includes_confidence_and_actions():
+    ws = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    we = datetime(2025, 1, 1, 6, 0, 0, tzinfo=timezone.utc)
+    msg = format_retrospective_telegram_message(
+        run_id="r2",
+        window_start=ws,
+        window_end=we,
+        analysis_json={
+            "diagnosis": "Win rate ok; fees drag PF.",
+            "confidence": 0.71,
+            "evaluation_horizon": "25 trades",
+            "rollback_criteria": "PF below 1.0",
+            "low_risk_actions": [
+                {"action": "no_action", "target": "", "value": None},
+            ],
+            "high_risk_suggestions": [{"action": "resize", "detail": "test detail"}],
+        },
+        analysis_text="",
+        max_chars=3500,
+    )
+    assert "Win rate ok" in msg
+    assert "0.710" in msg or "0.71" in msg
+    assert "no_action" in msg
+    assert "resize" in msg and "test detail" in msg
+
+
 @pytest.mark.asyncio
 async def test_telegram_skipped_when_disabled(monkeypatch):
     config = {

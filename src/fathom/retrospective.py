@@ -209,6 +209,54 @@ def _make_hl_client(config: dict) -> RateLimitedInfo:
     )
 
 
+def _format_telegram_action_line(item: Any) -> str:
+    if isinstance(item, dict):
+        parts = [
+            str(item.get("action", "?")),
+        ]
+        if item.get("target") not in (None, ""):
+            parts.append(f"target={item['target']!r}")
+        if "value" in item:
+            parts.append(f"value={item['value']!r}")
+        return "  - " + " ".join(parts)
+    return f"  - {item!s}"
+
+
+def _format_high_risk_line(item: Any) -> str:
+    if isinstance(item, dict):
+        a = str(item.get("action", "?"))
+        d = str(item.get("detail", "")).strip()
+        if d:
+            return f"  - {a}: {d}"
+        return f"  - {a}"
+    return f"  - {item!s}"
+
+
+def _append_list_section(
+    body_parts: list[str],
+    label: str,
+    val: Any,
+    *,
+    max_items: int = 12,
+    formatter: Any = None,
+) -> None:
+    if val is None:
+        return
+    if isinstance(val, list):
+        if not val:
+            body_parts.append(f"{label}:\n  (none)")
+            return
+        lines = "\n".join(
+            formatter(x) if formatter else f"  - {x!s}"
+            for x in val[:max_items]
+        )
+        body_parts.append(f"{label}:\n{lines}")
+        if len(val) > max_items:
+            body_parts.append(f"  … +{len(val) - max_items} more")
+    else:
+        body_parts.append(f"{label}:\n  {val!s}")
+
+
 def format_retrospective_telegram_message(
     *,
     run_id: str,
@@ -220,35 +268,79 @@ def format_retrospective_telegram_message(
 ) -> str:
     """Plain-text synopsis for Telegram; capped below Telegram 4096 limit."""
     cap = min(int(max_chars), 4096)
+    try:
+        dur_h = (window_end - window_start).total_seconds() / 3600.0
+    except Exception:
+        dur_h = 0.0
     header = (
         f"Fathom 6h retrospective\n"
         f"run_id: {run_id}\n"
         f"window_utc: {window_start.isoformat()} .. {window_end.isoformat()}\n"
+        f"lookback_h: {dur_h:.2f}\n"
     )
     body_parts: list[str] = []
 
     if analysis_json:
-        if analysis_json.get("diagnosis"):
-            body_parts.append("Diagnosis:\n" + str(analysis_json["diagnosis"]))
-        if analysis_json.get("summary"):
-            body_parts.append("Summary:\n" + str(analysis_json["summary"]))
+        sv = analysis_json.get("schema_version")
+        if sv is not None:
+            body_parts.append(f"schema_version: {sv}")
+
+        for key, title in (
+            ("diagnosis", "Diagnosis"),
+            ("summary", "Summary"),
+        ):
+            v = analysis_json.get(key)
+            if v is not None and str(v).strip():
+                body_parts.append(f"{title}:\n{str(v).strip()}")
+
+        conf = analysis_json.get("confidence")
+        if conf is not None:
+            try:
+                body_parts.append(f"confidence: {float(conf):.3f}")
+            except (TypeError, ValueError):
+                body_parts.append(f"confidence: {conf!s}")
+
+        eh = analysis_json.get("evaluation_horizon")
+        if eh is not None and str(eh).strip():
+            body_parts.append(f"evaluation_horizon: {eh!s}")
+
+        rc = analysis_json.get("rollback_criteria")
+        if rc is not None and str(rc).strip():
+            body_parts.append(f"rollback_criteria:\n{str(rc).strip()}")
+
+        _append_list_section(
+            body_parts,
+            "Low-risk actions",
+            analysis_json.get("low_risk_actions"),
+            formatter=_format_telegram_action_line,
+        )
+        _append_list_section(
+            body_parts,
+            "High-risk suggestions",
+            analysis_json.get("high_risk_suggestions"),
+            formatter=_format_high_risk_line,
+        )
         for label, key in (
-            ("Low-risk actions", "low_risk_actions"),
-            ("High-risk suggestions", "high_risk_suggestions"),
             ("Market factors", "market_factors"),
             ("Recommended changes", "recommended_changes"),
             ("Carry over", "carry_over"),
         ):
-            val = analysis_json.get(key)
-            if val:
-                if isinstance(val, list):
-                    lines = "\n".join(f"  - {x}" for x in val[:30])
-                    body_parts.append(f"{label}:\n{lines}")
-                else:
-                    body_parts.append(f"{label}:\n  {val}")
+            _append_list_section(body_parts, label, analysis_json.get(key))
+
     else:
         snippet = (analysis_text or "")[: max(0, cap - len(header) - 80)]
         body_parts.append("Summary: (JSON parse failed; excerpt below)\n" + snippet)
+
+    joined = "\n\n".join(body_parts)
+    sparse = len(joined.strip()) < 120
+    raw = (analysis_text or "").strip()
+    if analysis_json and raw and sparse:
+        excerpt_budget = max(0, cap - len(header) - len(joined) - 120)
+        if excerpt_budget > 80:
+            ex = raw[:excerpt_budget]
+            body_parts.append(
+                "--- Model output (excerpt; JSON body was empty or minimal) ---\n" + ex
+            )
 
     text = header + "\n" + "\n\n".join(body_parts)
     if len(text) > cap:
