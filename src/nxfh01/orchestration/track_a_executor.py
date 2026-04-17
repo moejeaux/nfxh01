@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from src.acp.degen_claw import AcpTradeRequest
@@ -86,12 +87,12 @@ class TrackAExecutor:
         journal_failed = 0
 
         for intent in intents:
-            proxy = TrackARiskSignal(
+            risk_signal = TrackARiskSignal(
                 coin=intent.coin.strip(),
                 side=intent.side,
                 position_size_usd=float(intent.position_size_usd),
             )
-            decision = self._risk_layer.validate(proxy, intent.engine_id)
+            decision = self._risk_layer.validate(risk_signal, intent.engine_id)
             if not decision.approved:
                 risk_rejected += 1
                 logger.info(
@@ -110,6 +111,18 @@ class TrackAExecutor:
                     intent.coin,
                 )
                 continue
+
+            sl = intent.stop_loss_price
+            tp = intent.take_profit_price
+            proxy = TrackARiskSignal(
+                coin=intent.coin.strip(),
+                side=intent.side,
+                position_size_usd=float(intent.position_size_usd),
+                entry_price=float(ref_px),
+                stop_loss_price=float(sl) if sl is not None else 0.0,
+                take_profit_price=float(tp) if tp is not None else 0.0,
+                strategy_key=str(intent.strategy_key),
+            )
 
             lev = self._leverage_for(intent)
             pos_id = str(uuid.uuid4())
@@ -161,6 +174,7 @@ class TrackAExecutor:
             pos = TrackAOpenPosition(
                 position_id=pos_id,
                 signal=proxy,
+                opened_at=datetime.now(timezone.utc),
             )
             self._portfolio_state.register_position(intent.engine_id, pos)
             registered += 1

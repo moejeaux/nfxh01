@@ -361,6 +361,42 @@ async def test_fetch_decisions_in_window(decision_journal, mock_pool):
 
 
 @pytest.mark.asyncio
+async def test_fetch_closed_decisions_for_metrics(decision_journal, mock_pool):
+    pool, conn = mock_pool
+    decision_journal._pool = pool
+    uid = uuid4()
+    oa = datetime.now(timezone.utc)
+    conn.fetch.return_value = [
+        {
+            "id": uid,
+            "created_at": oa,
+            "coin": "SOL",
+            "decision_type": "entry",
+            "regime": "ranging",
+            "weakness_score": 0.5,
+            "entry_price": 1.0,
+            "stop_loss_price": 2.0,
+            "take_profit_price": 3.0,
+            "position_size_usd": 25.0,
+            "fathom_override": False,
+            "fathom_size_mult": None,
+            "fathom_reasoning": None,
+            "exit_price": 2.0,
+            "exit_reason": "stop",
+            "pnl_usd": -1.0,
+            "pnl_pct": -0.1,
+            "hold_duration_seconds": 60,
+            "outcome_recorded_at": oa,
+            "regime_at_close": "ranging",
+        }
+    ]
+    rows = await decision_journal.fetch_closed_decisions_for_metrics(100)
+    assert len(rows) == 1
+    assert rows[0]["coin"] == "SOL"
+    assert conn.fetch.call_args[0][1] == 100
+
+
+@pytest.mark.asyncio
 async def test_insert_retrospective_run(decision_journal, mock_pool):
     pool, conn = mock_pool
     decision_journal._pool = pool

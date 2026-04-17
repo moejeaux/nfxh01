@@ -38,11 +38,19 @@ class AltScanner:
                      sum(1 for c in markets if c.startswith("@")),
                      scannable)
 
+        disabled = frozenset(
+            str(x).strip().upper()
+            for x in (self.config.get("learning") or {}).get("disabled_coins") or []
+            if x
+        )
+
         coin_list: list[str] = []
         for coin in markets:
             if coin in EXCLUDED_COINS:
                 continue
             if "/" in coin or coin.startswith("@"):
+                continue
+            if coin.strip().upper() in disabled:
                 continue
             coin_list.append(coin)
 

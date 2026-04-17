@@ -14,6 +14,7 @@ dependencies = [
     "supabase",
     "asyncpg",
     "pyyaml",
+    "ruamel.yaml>=0.18",
     "redis>=5.0",
     "hyperliquid-python-sdk>=0.22",
 ]

@@ -19,6 +19,7 @@ from src.engines.mc_recovery.engine import MCRecoveryEngine
 from src.fathom.advisor import FathomAdvisor
 from src.nxfh01.config_paths import find_config_yaml
 from src.nxfh01.orchestration.config_validation import validate_multi_strategy_config
+from src.exits.manager import LiveExitEngine
 from src.nxfh01.orchestration.strategy_orchestrator import StrategyOrchestrator
 from src.nxfh01.orchestration.strategy_registry import StrategyRegistry
 from src.nxfh01.orchestration.track_a_executor import TrackAExecutor
@@ -195,6 +196,8 @@ async def build_context(config: dict) -> dict:
         journal=journal,
     )
 
+    track_exit_engine = LiveExitEngine(config)
+
     orch_cfg = config.get("orchestration") or {}
     hl_addr = os.getenv("HL_WALLET_ADDRESS", "").strip()
     if hl_addr:
@@ -207,6 +210,10 @@ async def build_context(config: dict) -> dict:
         registry,
         runners,
         track_a_executor=track_a_executor,
+        portfolio_state=portfolio_state,
+        degen_executor=degen_executor,
+        hl_client=hl_client,
+        track_exit_engine=track_exit_engine,
     )
 
     tick_interval = float(
@@ -230,5 +237,6 @@ async def build_context(config: dict) -> dict:
         "strategy_registry": registry,
         "orchestrator": orchestrator,
         "track_a_executor": track_a_executor,
+        "track_exit_engine": track_exit_engine,
         "tick_interval_seconds": tick_interval,
     }

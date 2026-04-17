@@ -83,7 +83,13 @@ class GrowiHFEngine:
             logger.warning("GROWI_HF_MIDS_FAILED error=%s", e)
             return []
 
-        coins = list_perp_coins(self._hl, mids=mids_snap)[:max_eval]
+        raw_coins = list_perp_coins(self._hl, mids=mids_snap)[:max_eval]
+        disabled = frozenset(
+            str(x).strip().upper()
+            for x in (self._config.get("learning") or {}).get("disabled_coins") or []
+            if x
+        )
+        coins = [c for c in raw_coins if str(c).strip().upper() not in disabled]
         scored: list[tuple[float, str, str, float, float]] = []
 
         for coin in coins:

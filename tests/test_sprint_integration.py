@@ -197,7 +197,7 @@ async def test_trending_up_exits_existing_position(caplog):
     exits = [r for r in results if isinstance(r, AceExit)]
     assert len(exits) == 1
 
-    assert "ACEVAULT_REGIME_EXIT_ALL" in caplog.text
+    assert "EXIT_REGIME" in caplog.text and "pos-avax-1" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +333,7 @@ async def test_full_lifecycle_entry_hold_exit(caplog):
     assert exits_3[0].exit_reason == "take_profit"
     degen_executor.submit_close.assert_called_once()
 
-    assert "ACEVAULT_EXIT coin=ARB reason=take_profit" in caplog.text
+    assert "EXIT_TAKE_PROFIT" in caplog.text and "coin=ARB" in caplog.text
 
 
 # ---------------------------------------------------------------------------

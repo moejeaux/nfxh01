@@ -13,7 +13,12 @@ class FathomAdvisor:
         self._config = config
         self._ollama_base_url = ollama_base_url.rstrip('/')
         self._fathom_cfg = config['fathom']
-        self._timeout = self._fathom_cfg.get('timeout_seconds', 30)
+        self._timeout = float(
+            self._fathom_cfg.get(
+                'entry_timeout_seconds',
+                self._fathom_cfg.get('timeout_seconds', 30),
+            )
+        )
         self._max_mult = self._fathom_cfg.get('acevault_max_mult', 1.5)
         self._fast_model = self._fathom_cfg.get('fast_model', 'llama3.2:3b')
 

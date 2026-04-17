@@ -18,22 +18,21 @@ from src.fathom.retrospective import (
     try_parse_analysis_json,
 )
 
+_VALID_ADVISOR_JSON = {
+    "schema_version": 1,
+    "diagnosis": "test",
+    "low_risk_actions": [{"action": "no_action", "target": "", "value": None}],
+    "high_risk_suggestions": [],
+    "confidence": 0.5,
+    "evaluation_horizon": "25 trades",
+    "rollback_criteria": "none",
+}
 
-class _FakeOllamaHttpClient:
-    def __init__(self, *a, **k):
-        pass
 
-    async def __aenter__(self):
-        return self
+async def _fake_call_with_retry(*_a, **_k):
+    import json
 
-    async def __aexit__(self, *a):
-        return None
-
-    async def post(self, url, json=None):
-        r = MagicMock()
-        r.raise_for_status = MagicMock()
-        r.json = lambda: {"message": {"content": '{"summary": "s"}'}}
-        return r
+    return (json.dumps(_VALID_ADVISOR_JSON), dict(_VALID_ADVISOR_JSON))
 
 
 def test_build_decisions_digest_empty():
@@ -167,16 +166,25 @@ async def test_run_six_hour_retrospective_success(monkeypatch):
     journal = MagicMock()
     journal.connect = AsyncMock()
     journal.close = AsyncMock()
+    journal.is_connected = MagicMock(return_value=True)
     journal.fetch_decisions_in_window = AsyncMock(return_value=[])
     journal.get_recent_retrospectives = AsyncMock(return_value=[])
     journal.insert_retrospective_run = AsyncMock(return_value="new-uuid")
+    journal.learning_effectiveness_ratio = AsyncMock(return_value={})
+    journal.get_last_auto_apply_time = AsyncMock(return_value=None)
 
     monkeypatch.setattr("src.fathom.retrospective.DecisionJournal", lambda *a, **k: journal)
+    monkeypatch.setattr("src.fathom.retrospective.call_with_retry", _fake_call_with_retry)
+    monkeypatch.setattr(
+        "src.fathom.retrospective.maybe_apply_retro_analysis", AsyncMock()
+    )
+    monkeypatch.setattr(
+        "src.fathom.retrospective.evaluate_pending_learning_changes", AsyncMock()
+    )
 
-    with patch("src.fathom.retrospective.httpx.AsyncClient", _FakeOllamaHttpClient):
-        code = await run_six_hour_retrospective(
-            config, "postgresql://x/x", "http://localhost:11434"
-        )
+    code = await run_six_hour_retrospective(
+        config, "postgresql://x/x", "http://localhost:11434"
+    )
 
     assert code == 0
     journal.insert_retrospective_run.assert_called_once()
@@ -230,15 +238,24 @@ async def test_run_six_hour_shared_journal_does_not_close(monkeypatch):
     shared.get_recent_retrospectives = AsyncMock(return_value=[])
     shared.insert_retrospective_run = AsyncMock(return_value="shared-uuid")
     shared.close = AsyncMock()
+    shared.learning_effectiveness_ratio = AsyncMock(return_value={})
+    shared.get_last_auto_apply_time = AsyncMock(return_value=None)
 
-    with patch("src.fathom.retrospective.httpx.AsyncClient", _FakeOllamaHttpClient):
-        code = await run_six_hour_retrospective(
-            config,
-            "postgresql://x/x",
-            "http://localhost:11434",
-            shared_journal=shared,
-            hl_client=MagicMock(),
-        )
+    monkeypatch.setattr("src.fathom.retrospective.call_with_retry", _fake_call_with_retry)
+    monkeypatch.setattr(
+        "src.fathom.retrospective.maybe_apply_retro_analysis", AsyncMock()
+    )
+    monkeypatch.setattr(
+        "src.fathom.retrospective.evaluate_pending_learning_changes", AsyncMock()
+    )
+
+    code = await run_six_hour_retrospective(
+        config,
+        "postgresql://x/x",
+        "http://localhost:11434",
+        shared_journal=shared,
+        hl_client=MagicMock(),
+    )
 
     assert code == 0
     shared.close.assert_not_called()
@@ -318,14 +335,22 @@ async def test_telegram_skipped_when_disabled(monkeypatch):
     journal = MagicMock()
     journal.connect = AsyncMock()
     journal.close = AsyncMock()
+    journal.is_connected = MagicMock(return_value=True)
     journal.fetch_decisions_in_window = AsyncMock(return_value=[])
     journal.get_recent_retrospectives = AsyncMock(return_value=[])
     journal.insert_retrospective_run = AsyncMock(return_value="id1")
+    journal.learning_effectiveness_ratio = AsyncMock(return_value={})
+    journal.get_last_auto_apply_time = AsyncMock(return_value=None)
     monkeypatch.setattr("src.fathom.retrospective.DecisionJournal", lambda *a, **k: journal)
+    monkeypatch.setattr("src.fathom.retrospective.call_with_retry", _fake_call_with_retry)
+    monkeypatch.setattr(
+        "src.fathom.retrospective.maybe_apply_retro_analysis", AsyncMock()
+    )
+    monkeypatch.setattr(
+        "src.fathom.retrospective.evaluate_pending_learning_changes", AsyncMock()
+    )
     tg_cls = MagicMock()
-    with patch("src.fathom.retrospective.httpx.AsyncClient", _FakeOllamaHttpClient), patch(
-        "src.fathom.retrospective.TelegramBot", tg_cls
-    ):
+    with patch("src.fathom.retrospective.TelegramBot", tg_cls):
         code = await run_six_hour_retrospective(
             config, "postgresql://x/x", "http://localhost:11434"
         )
@@ -378,14 +403,22 @@ async def test_telegram_sent_when_enabled(monkeypatch):
     journal = MagicMock()
     journal.connect = AsyncMock()
     journal.close = AsyncMock()
+    journal.is_connected = MagicMock(return_value=True)
     journal.fetch_decisions_in_window = AsyncMock(return_value=[])
     journal.get_recent_retrospectives = AsyncMock(return_value=[])
     journal.insert_retrospective_run = AsyncMock(return_value="run-uuid-1")
+    journal.learning_effectiveness_ratio = AsyncMock(return_value={})
+    journal.get_last_auto_apply_time = AsyncMock(return_value=None)
     monkeypatch.setattr("src.fathom.retrospective.DecisionJournal", lambda *a, **k: journal)
+    monkeypatch.setattr("src.fathom.retrospective.call_with_retry", _fake_call_with_retry)
+    monkeypatch.setattr(
+        "src.fathom.retrospective.maybe_apply_retro_analysis", AsyncMock()
+    )
+    monkeypatch.setattr(
+        "src.fathom.retrospective.evaluate_pending_learning_changes", AsyncMock()
+    )
 
-    with patch("src.fathom.retrospective.httpx.AsyncClient", _FakeOllamaHttpClient), patch(
-        "src.fathom.retrospective.TelegramBot", return_value=mock_bot
-    ):
+    with patch("src.fathom.retrospective.TelegramBot", return_value=mock_bot):
         code = await run_six_hour_retrospective(
             config, "postgresql://x/x", "http://localhost:11434"
         )

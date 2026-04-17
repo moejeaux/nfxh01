@@ -165,6 +165,7 @@ class TestBuildContext:
             "strategy_registry",
             "orchestrator",
             "track_a_executor",
+            "track_exit_engine",
             "tick_interval_seconds",
         }
         assert set(ctx.keys()) == expected_keys

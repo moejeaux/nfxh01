@@ -4,7 +4,7 @@ import asyncio
 import logging
 import signal
 
-from src.fathom.retrospective import run_embedded_retrospective_loop
+from src.retro.loop import run_embedded_retrospective_loop
 from src.nxfh01.runtime import (
     VERSION,
     _log_startup_sequence,
@@ -44,6 +44,7 @@ async def main() -> None:
             shutdown_event,
             shared_journal=ctx.get("journal"),
             hl_client=ctx.get("hl_client"),
+            kill_switch=ctx.get("kill_switch"),
         ),
         name="fathom_retrospective_embedded",
     )

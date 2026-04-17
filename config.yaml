@@ -41,6 +41,9 @@ strategies:
   acevault:
     enabled: true
     engine_id: acevault
+    exits:
+      regime:
+        close_all_on_trending_up: true
   growi_hf:
     enabled: true
     engine_id: growi
@@ -138,14 +141,78 @@ fathom:
   model: llama3.2:3b
   fast_model: llama3.2:3b
   post_analysis_timeout_seconds: 180
+  # Fast-path entry advisor vs retrospective 14B — separate budgets (decision doc).
+  entry_timeout_seconds: 15
+  retro_timeout_seconds: 600
   timeout_seconds: 30
   # Reduced ~15% vs prior caps per Fathom retrospective advisory.
   acevault_max_mult: 1.28
   majors_max_mult: 1.68
 
+# Unified retrospective service (shallow + deep); single scheduler, lock, registry pipeline.
+retro:
+  enabled: true
+  embed_in_main_process: true
+  shallow_interval_minutes: 60
+  deep_interval_hours: 6
+  initial_delay_seconds: 120
+  catch_up_min_delay_seconds: 5
+  advisor_schema_version: 1
+  config_schema_version: 1
+  deep_model: fathom-r1-14b
+  shallow_lookback_hours: 2
+  deep_lookback_hours: 6
+  max_decision_rows: 200
+  max_decisions_prompt_chars: 12000
+  num_predict: 2048
+  temperature: 0.2
+  previous_runs_in_prompt: 1
+  healthy_gate:
+    min_closing_trades: 30
+    recent_pf_floor: 1.2
+    global_pf_floor: 1.0
+    max_fee_drag_pct: 0.5
+    cooldown_minutes_after_change: 0
+  telegram_notify: false
+  telegram_message_max_chars: 3500
+
+learning:
+  disabled_coins: []
+  reload_runtime_config_after_apply: true
+  min_trades_before_auto_apply: 30
+  max_changes_per_cycle: 1
+  cooldown_trades_after_change: 25
+  inconclusive_timeout_days: 7
+  evaluation_trade_checkpoints: [25, 50, 100]
+  evaluation_max_closed_rows: 50000
+  improve_pf_ratio: 1.05
+  auto_apply_min_confidence: 0.75
+  revert_pf_worsen_ratio: 0.85
+
+exits:
+  enabled: true
+  track_a:
+    enabled: true
+  hard_stop:
+    enabled: true
+  break_even:
+    enabled: true
+    trigger_r: 1.0
+    offset_r: 0.05
+  time_stop:
+    enabled: true
+    minutes: 45
+    min_progress_r: 0.3
+  partial_tp:
+    enabled: false
+  trailing:
+    enabled: true
+    activate_at_r: 1.0
+    distance_r: 0.75
+
 fathom_retrospective:
   enabled: true
-  # When true, NXFH01 main process runs the 6h retrospective on a timer (no separate cron).
+  # Legacy block: unified retro reads these when retro.* keys omit values.
   embed_in_main_process: true
   run_interval_hours: 6
   initial_delay_seconds: 120
@@ -158,7 +225,6 @@ fathom_retrospective:
   num_predict: 2048
   temperature: 0.2
   previous_runs_in_prompt: 1
-  # Optional: push synopsis to Telegram after each successful run (requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in env).
   telegram_notify: false
   telegram_message_max_chars: 3500
 

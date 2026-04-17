@@ -11,11 +11,23 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
+from src.nxfh01.config_paths import find_config_yaml
+from src.retro.advisor import (
+    build_strict_retro_user_prompt,
+    call_with_retry,
+)
+from src.retro.analysis_parse import try_parse_analysis_json
+from src.retro.applier import maybe_apply_retro_analysis
+from src.retro.metrics import (
+    build_extended_performance_snapshot,
+    build_metrics_from_decision_rows,
+)
+
 import yaml
 from dotenv import load_dotenv
 
 from src.db.decision_journal import DecisionJournal
+from src.intelligence.rollback import evaluate_pending_learning_changes
 from src.market_data.hl_rate_limited_info import RateLimitedInfo
 from src.market_data.hyperliquid_btc import fetch_real_market_data
 from src.notifications.telegram import TelegramBot
@@ -23,7 +35,7 @@ from src.regime.detector import RegimeDetector
 
 logger = logging.getLogger(__name__)
 
-_RETRO_LOG = "FATHOM_RETRO"
+_RETRO_LOG = "RETRO"
 
 
 def _load_config() -> dict:
@@ -80,27 +92,6 @@ def serialize_decisions_for_prompt(rows: list[dict[str, Any]], max_chars: int) -
     return text[:max_chars] + "\n…[truncated]"
 
 
-def try_parse_analysis_json(raw: str) -> dict[str, Any] | None:
-    """Best-effort JSON object from model output."""
-    s = raw.strip()
-    if not s:
-        return None
-    try:
-        obj = json.loads(s)
-        return obj if isinstance(obj, dict) else None
-    except json.JSONDecodeError:
-        pass
-    i = s.find("{")
-    j = s.rfind("}")
-    if i >= 0 and j > i:
-        try:
-            obj = json.loads(s[i : j + 1])
-            return obj if isinstance(obj, dict) else None
-        except json.JSONDecodeError:
-            return None
-    return None
-
-
 def compute_next_retrospective_wait_seconds(
     last_run_at: datetime | None,
     now: datetime,
@@ -147,98 +138,18 @@ async def run_embedded_retrospective_loop(
     *,
     shared_journal: DecisionJournal | None = None,
     hl_client: Any | None = None,
+    kill_switch: Any | None = None,
 ) -> None:
-    """Background task: run six-hour retrospective on a fixed cadence while the agent runs."""
-    fr = config.get("fathom_retrospective") or {}
-    if not fr.get("enabled", False):
-        logger.info("%s_EMBED_SKIP reason=fathom_retrospective.disabled", _RETRO_LOG)
-        return
-    if not fr.get("embed_in_main_process", True):
-        logger.info("%s_EMBED_SKIP reason=embed_in_main_process.false", _RETRO_LOG)
-        return
+    """Delegate to unified retro scheduler in ``src.retro.loop`` (single service, shallow+deep)."""
+    from src.retro.loop import run_embedded_retrospective_loop as _embedded
 
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        logger.warning("%s_EMBED_SKIP reason=DATABASE_URL_missing", _RETRO_LOG)
-        return
-
-    interval_h = int(fr.get("run_interval_hours", 6))
-    initial_delay = float(fr.get("initial_delay_seconds", 120))
-    catch_up_min = float(fr.get("catch_up_min_delay_seconds", 5))
-    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-
-    logger.info(
-        "%s_EMBED_STARTED interval_hours=%d initial_delay_s=%.0f shared_journal=%s",
-        _RETRO_LOG,
-        interval_h,
-        initial_delay,
-        shared_journal is not None and shared_journal.is_connected(),
+    await _embedded(
+        config,
+        shutdown_event,
+        shared_journal=shared_journal,
+        hl_client=hl_client,
+        kill_switch=kill_switch,
     )
-
-    first = True
-    try:
-        while not shutdown_event.is_set():
-            if first:
-                last_at: datetime | None = None
-                if shared_journal is not None and shared_journal.is_connected():
-                    try:
-                        recent = await shared_journal.get_recent_retrospectives(1)
-                        if recent:
-                            ca = recent[0].get("created_at")
-                            if isinstance(ca, datetime):
-                                last_at = ca
-                    except Exception as e:
-                        logger.warning(
-                            "%s_EMBED_LAST_RUN_QUERY_FAILED error=%s", _RETRO_LOG, e
-                        )
-                else:
-                    j = DecisionJournal(db_url)
-                    try:
-                        await j.connect(config)
-                        recent = await j.get_recent_retrospectives(1)
-                        if recent:
-                            ca = recent[0].get("created_at")
-                            if isinstance(ca, datetime):
-                                last_at = ca
-                    except Exception as e:
-                        logger.warning(
-                            "%s_EMBED_LAST_RUN_QUERY_FAILED error=%s", _RETRO_LOG, e
-                        )
-                    finally:
-                        await j.close()
-
-                now = datetime.now(timezone.utc)
-                wait = compute_next_retrospective_wait_seconds(
-                    last_at,
-                    now,
-                    interval_h,
-                    initial_delay,
-                    catch_up_min,
-                )
-                first = False
-            else:
-                wait = float(interval_h * 3600)
-
-            if await _wait_retro_shutdown(shutdown_event, wait):
-                break
-
-            try:
-                code = await run_six_hour_retrospective(
-                    config,
-                    db_url,
-                    ollama_url,
-                    shared_journal=shared_journal,
-                    hl_client=hl_client,
-                )
-                logger.info("%s_EMBED_RUN_DONE exit_code=%d", _RETRO_LOG, code)
-            except asyncio.CancelledError:
-                logger.info("%s_EMBED_CANCELLED during_run", _RETRO_LOG)
-                raise
-            except Exception as e:
-                logger.error("%s_EMBED_RUN_FAILED error=%s", _RETRO_LOG, e, exc_info=True)
-    except asyncio.CancelledError:
-        logger.info("%s_EMBED_CANCELLED", _RETRO_LOG)
-        raise
 
 
 def _build_prompt(
@@ -317,9 +228,13 @@ def format_retrospective_telegram_message(
     body_parts: list[str] = []
 
     if analysis_json:
+        if analysis_json.get("diagnosis"):
+            body_parts.append("Diagnosis:\n" + str(analysis_json["diagnosis"]))
         if analysis_json.get("summary"):
             body_parts.append("Summary:\n" + str(analysis_json["summary"]))
         for label, key in (
+            ("Low-risk actions", "low_risk_actions"),
+            ("High-risk suggestions", "high_risk_suggestions"),
             ("Market factors", "market_factors"),
             ("Recommended changes", "recommended_changes"),
             ("Carry over", "carry_over"),
@@ -382,6 +297,18 @@ async def _maybe_send_telegram_retrospective(
         logger.warning("%s_TELEGRAM_FAILED error=%s", _RETRO_LOG, e)
 
 
+def _kill_switch_any_active(kill_switch: Any | None) -> bool:
+    if kill_switch is None:
+        return False
+    for eid in ("acevault", "growi", "mc"):
+        try:
+            if kill_switch.is_active(eid):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def run_six_hour_retrospective(
     config: dict,
     database_url: str,
@@ -389,17 +316,32 @@ async def run_six_hour_retrospective(
     *,
     shared_journal: DecisionJournal | None = None,
     hl_client: Any | None = None,
+    mode: str = "deep",
+    lookback_hours: int | None = None,
+    out_meta: dict[str, Any] | None = None,
+    kill_switch: Any | None = None,
 ) -> int:
     """Run one retrospective; return process exit code (0 ok, 1 error)."""
     fr = config.get("fathom_retrospective") or {}
-    if not fr.get("enabled", False):
-        logger.info("%s_DISABLED config=fathom_retrospective.enabled", _RETRO_LOG)
+    retro = config.get("retro") or {}
+    if not fr.get("enabled", False) and not retro.get("enabled", False):
+        logger.info("%s_DISABLED config=retro_and_fathom_retrospective", _RETRO_LOG)
         return 0
 
-    lookback = int(fr.get("lookback_hours", 6))
-    max_rows = int(fr.get("max_decision_rows", 200))
-    deep_model = str(fr.get("deep_model", "fathom-r1-14b"))
-    timeout_s = float(fr.get("timeout_seconds", 600))
+    if lookback_hours is not None:
+        lookback = int(lookback_hours)
+    elif mode == "shallow":
+        lookback = int(retro.get("shallow_lookback_hours", fr.get("lookback_hours", 6)))
+    else:
+        lookback = int(retro.get("deep_lookback_hours", fr.get("lookback_hours", 6)))
+    max_rows = int((retro.get("max_decision_rows") if retro else None) or fr.get("max_decision_rows", 200))
+    deep_model = str(
+        retro.get("deep_model") or fr.get("deep_model", "fathom-r1-14b")
+    )
+    fathom_cfg = config.get("fathom") or {}
+    timeout_s = float(
+        fathom_cfg.get("retro_timeout_seconds", fr.get("timeout_seconds", 600))
+    )
     num_predict = int(fr.get("num_predict", 2048))
     temperature = float(fr.get("temperature", 0.2))
     prev_n = int(fr.get("previous_runs_in_prompt", 1))
@@ -409,8 +351,9 @@ async def run_six_hour_retrospective(
     window_start = window_end - timedelta(hours=lookback)
 
     logger.info(
-        "%s_START window_start=%s window_end=%s lookback_hours=%d model=%s",
+        "%s_START mode=%s window_start=%s window_end=%s lookback_hours=%d model=%s",
         _RETRO_LOG,
+        mode,
         window_start.isoformat(),
         window_end.isoformat(),
         lookback,
@@ -428,6 +371,12 @@ async def run_six_hour_retrospective(
             return 1
 
     try:
+        if journal.is_connected():
+            try:
+                await evaluate_pending_learning_changes(config, journal)
+            except Exception as e:
+                logger.warning("%s_LEARN_EVAL_FAILED error=%s", _RETRO_LOG, e)
+
         market_data: dict[str, Any]
         try:
             hl_for_fetch = hl_client if hl_client is not None else _make_hl_client(config)
@@ -455,6 +404,41 @@ async def run_six_hour_retrospective(
         digest = build_decisions_digest(rows)
         decisions_block = serialize_decisions_for_prompt(rows, max_prompt_chars)
 
+        from src.retro.gate import evaluate_retro_skip
+
+        metrics = build_metrics_from_decision_rows(
+            rows,
+            recent_hours=float(retro.get("shallow_lookback_hours", 24)),
+        )
+        cooldown_active = False
+        hg = retro.get("healthy_gate") or {}
+        cm = float(hg.get("cooldown_minutes_after_change", 0))
+        if cm > 0 and journal.is_connected():
+            try:
+                last = await journal.get_last_auto_apply_time()
+                if last is not None:
+                    if last.tzinfo is None:
+                        last = last.replace(tzinfo=timezone.utc)
+                    delta_min = (
+                        datetime.now(timezone.utc) - last
+                    ).total_seconds() / 60.0
+                    if delta_min < cm:
+                        cooldown_active = True
+            except Exception as e:
+                logger.warning("%s_COOLDOWN_QUERY_FAILED error=%s", _RETRO_LOG, e)
+
+        skip_dec = evaluate_retro_skip(
+            config,
+            metrics,
+            mode=mode,
+            cooldown_active=cooldown_active,
+        )
+        if skip_dec.skip_fathom:
+            if out_meta is not None:
+                out_meta["skipped_fathom_healthy"] = True
+                out_meta["skip_reason"] = skip_dec.reason
+            return 0
+
         last_runs = await journal.get_recent_retrospectives(1)
         previous_run_id = (
             str(last_runs[0]["id"]) if last_runs else None
@@ -471,43 +455,50 @@ async def run_six_hour_retrospective(
                     parts.append(json.dumps(pr["analysis_json"], indent=2)[:4000])
             previous_review = "\n---\n".join(parts) if parts else None
 
-        prompt = _build_prompt(
+        learning_eff: dict[str, Any] = {}
+        if journal.is_connected():
+            try:
+                learning_eff = await journal.learning_effectiveness_ratio()
+            except Exception as e:
+                logger.warning("%s_LEARNING_EFF_FAILED error=%s", _RETRO_LOG, e)
+
+        performance_snapshot = build_extended_performance_snapshot(
+            rows,
+            config,
+            recent_hours=float(retro.get("shallow_lookback_hours", 24)),
+            learning_effectiveness=learning_eff,
+        )
+        performance_snapshot["regime"] = regime_label
+        performance_snapshot["regime_confidence"] = regime_confidence
+        performance_snapshot["market_data"] = dict(market_data)
+
+        user_prompt = build_strict_retro_user_prompt(
+            mode=mode,
             window_start=window_start,
             window_end=window_end,
-            market_data=market_data,
-            regime_label=regime_label,
-            regime_confidence=regime_confidence,
-            digest=digest,
+            performance_snapshot=performance_snapshot,
             decisions_block=decisions_block,
             previous_review=previous_review,
         )
 
-        url = ollama_base_url.rstrip("/") + "/api/chat"
-        payload = {
-            "model": deep_model,
-            "stream": False,
-            "options": {"num_predict": num_predict, "temperature": temperature},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a disciplined trading systems analyst. Be specific and cite metrics from the user message.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-        }
-
         raw_text = ""
+        analysis_json: dict[str, Any] | None = None
         try:
-            async with httpx.AsyncClient(timeout=timeout_s) as client:
-                resp = await client.post(url, json=payload)
-                resp.raise_for_status()
-                raw_text = (resp.json().get("message") or {}).get("content") or ""
-                raw_text = str(raw_text).strip()
+            raw_text, analysis_json = await call_with_retry(
+                config,
+                ollama_base_url,
+                user_prompt,
+                model=deep_model,
+                num_predict=num_predict,
+                temperature=temperature,
+                timeout_s=timeout_s,
+            )
         except Exception as e:
             logger.error("%s_OLLAMA_FAILED error=%s", _RETRO_LOG, e)
             return 1
 
-        analysis_json = try_parse_analysis_json(raw_text)
+        if analysis_json is None:
+            analysis_json = try_parse_analysis_json(raw_text)
         if analysis_json is None:
             logger.warning("%s_PARSE_FALLBACK storing_raw_text_only", _RETRO_LOG)
 
@@ -537,6 +528,26 @@ async def run_six_hour_retrospective(
             analysis_json=analysis_json,
             analysis_text=raw_text,
         )
+
+        if analysis_json and isinstance(analysis_json, dict):
+            try:
+                cfg_path = find_config_yaml()
+                bp = metrics.global_profit_factor
+                if bp == float("inf"):
+                    bp = 2.0
+                await maybe_apply_retro_analysis(
+                    config=config,
+                    config_path=cfg_path,
+                    analysis_json=analysis_json,
+                    journal=journal,
+                    retrospective_run_id=new_id,
+                    mode=mode,
+                    kill_switch_any_active=_kill_switch_any_active(kill_switch),
+                    metrics=metrics,
+                    baseline_pf=float(bp),
+                )
+            except Exception as e:
+                logger.warning("%s_APPLIER_FAILED error=%s", _RETRO_LOG, e, exc_info=True)
 
         return 0
     finally:

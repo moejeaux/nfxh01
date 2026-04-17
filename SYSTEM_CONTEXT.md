@@ -62,6 +62,13 @@ All numeric thresholds live here; never hardcode:
 - `fathom.acevault_max_mult = 1.5`
 - `fathom.majors_max_mult = 2.0`
 
+### Runtime config hot-reload (learning applier)
+Hot-reload is **intentionally limited** to **patch-style, in-place updates** of the **shared live config root** (`merge_into_live_config` in `src/nxfh01/config_reload.py`). It is **safe** for config domains whose consumers read from that shared structure on each use or hold **aliased nested dicts** (engines, `UnifiedRiskLayer`, `KillSwitch`, shallow-copied executor roots, etc.).
+
+It is **not** full runtime reconfiguration for components that **cache scalar values at initialization** (e.g. some fields on `FathomAdvisor`). Those remain **restart-bound** unless given an **explicit refresh hook** later.
+
+In practice, retrospective-approved changes to **reload-safe** domains (`learning.*`, `acevault` / Growi / MC fields touched by the applier) can take effect **without a restart** when `learning.reload_runtime_config_after_apply` is true. **Execution-critical** or other components that cache at startup still rely on **restart** or a **future explicit refresh hook**.
+
 ## Non-Negotiable Rules
 
 1. **Never modify `src/execution/`** unless explicitly instructed.
@@ -105,6 +112,20 @@ If you prefer not to embed secrets in crontab, use a two-line wrapper script tha
 - **pytest** with `@pytest.mark.live` for real Hyperliquid mainnet tests.
 - Default: run without `live` marker (`pytest -m "not live"`).
 - Run live deliberately: `pytest -m live`.
+
+### Production validation (staged — do not skip gates)
+Treat **mainnet** as irreversible money at risk. Use **small size**, **explicit env** (see [`.env.example`](.env.example)), and **`HL_TESTNET=false`** only when you intend mainnet reads.
+
+| Stage | Goal | Actions |
+|--------|------|---------|
+| **1. CI / local** | Regressions caught before deploy | `pytest -m "not live"` (full suite green). Install deps from `pyproject.toml` (e.g. `ruamel.yaml`). |
+| **2. Connectivity** | HL + DB + Ollama reachable from the **same host** that will run the agent | Set `DATABASE_URL`, `HL_WALLET_ADDRESS`, `OLLAMA_BASE_URL`. Confirm Postgres migration applied (`learning_change_records`, etc.). |
+| **3. Read-only / no orders** | Market data, regime, scanner, risk globals without execution | Run [`scripts/verify_nxfh01_production.py`](scripts/verify_nxfh01_production.py) on the target machine. It asserts `HL_TESTNET` is not true and exercises HL **Info** + one AceVault-style cycle without DegenClaw. Fix any import/signature drift vs current `AceVaultEngine` before relying on it. |
+| **4. Intelligence loop (optional)** | Retrospective + registry + hot-reload path | With `DATABASE_URL`: `python scripts/retro_now.py` (one retro run); `python scripts/evaluate_change.py` (pending learning evaluations). Watch logs for `RETRO_*`, `LEARN_*`, `RISK_CONFIG_HOT_RELOAD`. |
+| **5. Supervised live** | Full orchestrator with **human watching** first session | Run the real entry point (`nxfh01` / `src/nxfh01/main.py`). Confirm `RISK_*`, `ACEVAULT_*`, `REGIME_*`, `ORCH_*` lines; verify kill switch and risk gates behave. Start with **minimal** strategy exposure in `config.yaml` if possible. |
+| **6. Soak** | Stability over hours | Log rotation, memory, DB connections, no silent task death. Re-run stage 3 or health checks after deploy. |
+
+**Push for quality:** block releases on **stage 1** in CI; require **stage 3** on the **production host** before enabling unattended trading; keep **stage 5** short and staffed until metrics look normal.
 
 ## Hardware & LLM
 - **Hardware:** Mac Mini M4, 16GB RAM.
