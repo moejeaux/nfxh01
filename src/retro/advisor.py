@@ -38,6 +38,7 @@ def build_strict_retro_user_prompt(
     performance_snapshot: dict[str, Any],
     decisions_block: str,
     previous_review: str | None,
+    advisor_schema_version: int = 1,
 ) -> str:
     prev = previous_review or "(no prior retrospective in database)"
     snap = json.dumps(performance_snapshot, indent=2, ensure_ascii=False, default=str)
@@ -45,6 +46,9 @@ def build_strict_retro_user_prompt(
 === TIME WINDOW (UTC) ===
 start: {window_start.isoformat()}
 end: {window_end.isoformat()}
+
+=== JSON SCHEMA VERSION (mandatory) ===
+Set "schema_version" to exactly {int(advisor_schema_version)} (integer). The server rejects any other value for automated config application.
 
 === PERFORMANCE SNAPSHOT (structured) ===
 {snap}

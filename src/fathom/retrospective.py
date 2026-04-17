@@ -472,6 +472,7 @@ async def run_six_hour_retrospective(
         performance_snapshot["regime_confidence"] = regime_confidence
         performance_snapshot["market_data"] = dict(market_data)
 
+        adv_sv = int((retro or {}).get("advisor_schema_version", 1))
         user_prompt = build_strict_retro_user_prompt(
             mode=mode,
             window_start=window_start,
@@ -479,6 +480,7 @@ async def run_six_hour_retrospective(
             performance_snapshot=performance_snapshot,
             decisions_block=decisions_block,
             previous_review=previous_review,
+            advisor_schema_version=adv_sv,
         )
 
         raw_text = ""

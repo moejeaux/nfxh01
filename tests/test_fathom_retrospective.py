@@ -17,6 +17,7 @@ from src.fathom.retrospective import (
     serialize_decisions_for_prompt,
     try_parse_analysis_json,
 )
+from src.retro.advisor import build_strict_retro_user_prompt
 
 _VALID_ADVISOR_JSON = {
     "schema_version": 1,
@@ -68,6 +69,30 @@ def test_try_parse_analysis_json_embedded():
     raw = 'Intro\n{"summary": "ok", "carry_over": []}\n'
     out = try_parse_analysis_json(raw)
     assert out == {"summary": "ok", "carry_over": []}
+
+
+def test_build_strict_retro_user_prompt_requires_schema_version_in_prompt():
+    t = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    p = build_strict_retro_user_prompt(
+        mode="deep",
+        window_start=t,
+        window_end=t,
+        performance_snapshot={},
+        decisions_block="",
+        previous_review=None,
+        advisor_schema_version=1,
+    )
+    assert 'Set "schema_version" to exactly 1' in p
+    p7 = build_strict_retro_user_prompt(
+        mode="deep",
+        window_start=t,
+        window_end=t,
+        performance_snapshot={},
+        decisions_block="",
+        previous_review=None,
+        advisor_schema_version=7,
+    )
+    assert 'Set "schema_version" to exactly 7' in p7
 
 
 def test_compute_next_retrospective_wait_seconds_no_prior():
