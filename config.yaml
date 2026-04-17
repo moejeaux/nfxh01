@@ -159,6 +159,8 @@ retro:
   catch_up_min_delay_seconds: 5
   advisor_schema_version: 1
   config_schema_version: 1
+  # Ollama /api/chat: ask for JSON mode (reduces prose-only responses). Set false if API errors.
+  ollama_json_response_format: true
   deep_model: fathom-r1-14b
   shallow_lookback_hours: 2
   deep_lookback_hours: 6
