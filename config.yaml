@@ -230,7 +230,7 @@ fathom_retrospective:
   num_predict: 2048
   temperature: 0.2
   previous_runs_in_prompt: 1
-  telegram_notify: false
+  telegram_notify: true
   telegram_message_max_chars: 3500
 
 regime:
