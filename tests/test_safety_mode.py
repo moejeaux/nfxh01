@@ -61,13 +61,14 @@ def test_compute_stays_reduced_when_pf_low():
 
 def test_validate_scales_position_when_multiplier_below_one():
     cfg = {
+        "acp": {"min_trade_size_usd": 10},
         "risk": {
             "total_capital_usd": 100000,
             "max_portfolio_drawdown_24h": 0.5,
             "max_gross_multiplier": 10.0,
             "max_correlated_longs": None,
             "min_available_capital_usd": 1.0,
-        }
+        },
     }
     ps = PortfolioState()
     ks = MagicMock()
@@ -84,6 +85,35 @@ def test_validate_scales_position_when_multiplier_below_one():
     d = risk.validate(s, "acevault")
     assert d.approved is True
     assert abs(s.position_size_usd - 10.0) < 1e-9
+
+
+def test_validate_rejects_below_acp_min_after_safety_scale():
+    cfg = {
+        "acp": {"min_trade_size_usd": 10},
+        "risk": {
+            "total_capital_usd": 100000,
+            "max_portfolio_drawdown_24h": 0.5,
+            "max_gross_multiplier": 10.0,
+            "max_correlated_longs": None,
+            "min_available_capital_usd": 1.0,
+        },
+    }
+    ps = PortfolioState()
+    ks = MagicMock()
+    ks.is_active.return_value = False
+    risk = UnifiedRiskLayer(cfg, ps, ks)
+    risk.set_safety_position_multiplier(0.1)
+
+    class _Sig:
+        coin = "APEX"
+        side = "short"
+        position_size_usd = 20.0
+
+    s = _Sig()
+    d = risk.validate(s, "growi")
+    assert d.approved is False
+    assert d.reason == "below_min_trade_size"
+    assert abs(s.position_size_usd - 2.0) < 1e-9
 
 
 @pytest.mark.asyncio

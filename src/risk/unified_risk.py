@@ -50,6 +50,24 @@ class UnifiedRiskLayer:
                 signal.position_size_usd,
             )
 
+        acp_cfg = self._config.get("acp") or {}
+        min_trade = acp_cfg.get("min_trade_size_usd")
+        if min_trade is not None:
+            try:
+                mt = float(min_trade)
+            except (TypeError, ValueError):
+                mt = 0.0
+            if mt > 0 and float(signal.position_size_usd) < mt:
+                logger.warning(
+                    "RISK_REJECTED engine=%s reason=below_min_trade_size adjusted=%.2f min=%.2f "
+                    "safety_mult=%.4f",
+                    engine_id,
+                    float(signal.position_size_usd),
+                    mt,
+                    self._safety_position_multiplier,
+                )
+                return RiskDecision(approved=False, reason="below_min_trade_size")
+
         dd = self._portfolio_state.get_portfolio_drawdown_24h()
         max_dd = self._risk_cfg.get("max_portfolio_drawdown_24h", 0.05)
         if dd >= max_dd:
