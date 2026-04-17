@@ -44,6 +44,10 @@ strategies:
     exits:
       regime:
         close_all_on_trending_up: true
+        min_seconds_in_trending_up_before_close_all: 120
+        min_confidence_before_close_all: 0.75
+        min_consecutive_trending_up_observations: 3
+        mass_exit_cooldown_seconds: 300
   growi_hf:
     enabled: true
     engine_id: growi

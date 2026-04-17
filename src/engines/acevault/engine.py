@@ -79,7 +79,10 @@ class AceVaultEngine:
         self._update_position_prices(current_prices)
 
         exits = self._exit_manager.check_exits(
-            self._open_positions, current_prices, regime_state.regime
+            self._open_positions,
+            current_prices,
+            regime_state.regime,
+            confidence=regime_state.confidence,
         )
         for exit in exits:
             try:

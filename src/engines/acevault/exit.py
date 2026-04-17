@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from src.engines.acevault.models import AcePosition
-from src.exits.manager import LiveExitEngine, regime_exit_trending_up_acevault
+from src.exits.manager import LiveExitEngine, TrendingUpMassExitGate
 from src.exits.models import UniversalExit
 from src.regime.models import RegimeType
 
@@ -47,17 +47,24 @@ class ExitManager:
     def __init__(self, config: dict) -> None:
         self._config = config
         self._engine = LiveExitEngine(config)
+        self._trending_up_mass_exit_gate = TrendingUpMassExitGate()
 
     def check_exits(
         self,
         open_positions: list[AcePosition],
         current_prices: dict[str, float],
         current_regime: RegimeType,
+        confidence: float | None = None,
     ) -> list[AceExit]:
-        regime_exit = (
-            current_regime == RegimeType.TRENDING_UP
-            and regime_exit_trending_up_acevault(self._config, "acevault")
-        )
+        regime_exit = False
+        if current_regime == RegimeType.TRENDING_UP:
+            regime_exit = self._trending_up_mass_exit_gate.regime_exit_all_trending_up(
+                strategy_key="acevault",
+                now=datetime.now(timezone.utc),
+                regime=current_regime,
+                confidence=confidence,
+                config=self._config,
+            )
         universal = self._engine.evaluate_portfolio_positions(
             engine_id="acevault",
             positions=open_positions,

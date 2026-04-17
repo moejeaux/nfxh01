@@ -1,14 +1,180 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from src.exits.models import Side, UniversalExit
 from src.exits.policy_config import resolve_exit_policy
 from src.exits.policies import evaluate_exit, update_extremes_and_peak
 from src.exits.state import ExitStateStore
+from src.regime.models import RegimeType
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _TrendingUpMassExitTrack:
+    consecutive_trending_up: int = 0
+    streak_start_at: datetime | None = None
+    last_mass_exit_at: datetime | None = None
+
+
+class TrendingUpMassExitGate:
+    """Exit-side hysteresis for AceVault-style ``close_all_on_trending_up`` mass exits."""
+
+    def __init__(self) -> None:
+        self._tracks: dict[str, _TrendingUpMassExitTrack] = {}
+
+    def _track(self, strategy_key: str) -> _TrendingUpMassExitTrack:
+        if strategy_key not in self._tracks:
+            self._tracks[strategy_key] = _TrendingUpMassExitTrack()
+        return self._tracks[strategy_key]
+
+    def _reset_track(self, strategy_key: str) -> None:
+        self._tracks[strategy_key] = _TrendingUpMassExitTrack()
+
+    def _log_suppressed(
+        self,
+        *,
+        strategy_key: str,
+        regime: RegimeType,
+        confidence: float | None,
+        seconds_in_regime: float,
+        consecutive_observations: int,
+        cooldown_remaining: float,
+        suppression_reason: str,
+    ) -> None:
+        logger.info(
+            "ACEVAULT_MASS_EXIT_SUPPRESSED strategy=%s current_regime=%s confidence=%s "
+            "seconds_in_regime=%.3f consecutive_observations=%d cooldown_remaining=%.3f "
+            "suppression_reason=%s",
+            strategy_key,
+            regime.value,
+            confidence if confidence is not None else "None",
+            seconds_in_regime,
+            consecutive_observations,
+            cooldown_remaining,
+            suppression_reason,
+        )
+
+    def regime_exit_all_trending_up(
+        self,
+        *,
+        strategy_key: str,
+        now: datetime,
+        regime: RegimeType,
+        confidence: float | None,
+        config: dict[str, Any],
+    ) -> bool:
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+
+        pol = resolve_exit_policy(config, strategy_key)
+        r = pol.get("regime") or {}
+        close_all = bool(r.get("close_all_on_trending_up", True))
+
+        if not close_all:
+            self._reset_track(strategy_key)
+            return False
+
+        if regime != RegimeType.TRENDING_UP:
+            self._reset_track(strategy_key)
+            return False
+
+        tr = self._track(strategy_key)
+        if tr.streak_start_at is None:
+            tr.streak_start_at = now
+        tr.consecutive_trending_up += 1
+
+        seconds_in = (now - tr.streak_start_at).total_seconds()
+        consec = tr.consecutive_trending_up
+
+        min_sec = float(r.get("min_seconds_in_trending_up_before_close_all", 0))
+        min_conf_raw = r.get("min_confidence_before_close_all", None)
+        min_conf_enabled = min_conf_raw is not None
+        min_conf = float(min_conf_raw) if min_conf_enabled else 0.0
+        min_consec = int(r.get("min_consecutive_trending_up_observations", 0))
+        cooldown = float(r.get("mass_exit_cooldown_seconds", 0))
+
+        cooldown_remaining = 0.0
+        if tr.last_mass_exit_at is not None and cooldown > 0:
+            elapsed = (now - tr.last_mass_exit_at).total_seconds()
+            if elapsed < cooldown:
+                cooldown_remaining = cooldown - elapsed
+                self._log_suppressed(
+                    strategy_key=strategy_key,
+                    regime=regime,
+                    confidence=confidence,
+                    seconds_in_regime=seconds_in,
+                    consecutive_observations=consec,
+                    cooldown_remaining=cooldown_remaining,
+                    suppression_reason="cooldown_active",
+                )
+                return False
+
+        if min_conf_enabled:
+            if confidence is None:
+                self._log_suppressed(
+                    strategy_key=strategy_key,
+                    regime=regime,
+                    confidence=confidence,
+                    seconds_in_regime=seconds_in,
+                    consecutive_observations=consec,
+                    cooldown_remaining=cooldown_remaining,
+                    suppression_reason="confidence_unavailable",
+                )
+                return False
+            if confidence < min_conf:
+                self._log_suppressed(
+                    strategy_key=strategy_key,
+                    regime=regime,
+                    confidence=confidence,
+                    seconds_in_regime=seconds_in,
+                    consecutive_observations=consec,
+                    cooldown_remaining=cooldown_remaining,
+                    suppression_reason="insufficient_confidence",
+                )
+                return False
+
+        if min_sec > 0 and seconds_in < min_sec:
+            self._log_suppressed(
+                strategy_key=strategy_key,
+                regime=regime,
+                confidence=confidence,
+                seconds_in_regime=seconds_in,
+                consecutive_observations=consec,
+                cooldown_remaining=cooldown_remaining,
+                suppression_reason="insufficient_seconds",
+            )
+            return False
+
+        if min_consec > 0 and consec < min_consec:
+            self._log_suppressed(
+                strategy_key=strategy_key,
+                regime=regime,
+                confidence=confidence,
+                seconds_in_regime=seconds_in,
+                consecutive_observations=consec,
+                cooldown_remaining=cooldown_remaining,
+                suppression_reason="insufficient_consecutive",
+            )
+            return False
+
+        tr.last_mass_exit_at = now
+        tr.streak_start_at = None
+        tr.consecutive_trending_up = 0
+        logger.info(
+            "ACEVAULT_MASS_EXIT_FIRED strategy=%s current_regime=%s confidence=%s "
+            "seconds_in_regime=%.3f consecutive_observations=%d",
+            strategy_key,
+            regime.value,
+            confidence if confidence is not None else "None",
+            seconds_in,
+            consec,
+        )
+        return True
 
 
 def _side_from_signal(signal: Any) -> Side:
