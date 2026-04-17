@@ -181,6 +181,8 @@ retro:
 learning:
   disabled_coins: []
   reload_runtime_config_after_apply: true
+  # Graduation PF floor for safety mode (see risk.safety_mode); risk block takes precedence when both set.
+  min_profit_factor_before_leaving_safety_mode: 1.02
   min_trades_before_auto_apply: 30
   max_changes_per_cycle: 1
   cooldown_trades_after_change: 25
@@ -259,7 +261,7 @@ risk:
   # Until last N closed AceVault trades meet PF + avg win/avg |loss| thresholds, scale entries by position_multiplier.
   safety_mode:
     enabled: true
-    position_multiplier: 0.1
+    position_multiplier: 0.5
     min_closed_trades: 30
-    min_profit_factor: 1.05
+    min_profit_factor_before_leaving_safety_mode: 1.02
     min_avg_win_loss_ratio: 1.0

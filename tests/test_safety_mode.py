@@ -59,6 +59,40 @@ def test_compute_stays_reduced_when_pf_low():
     assert meta.get("pf_ok") is False
 
 
+def test_min_pf_from_learning_when_absent_in_risk_safety_mode():
+    risk = {
+        "safety_mode": {
+            "enabled": True,
+            "position_multiplier": 0.5,
+            "min_closed_trades": 4,
+            "min_avg_win_loss_ratio": 1.0,
+        }
+    }
+    learn = {"min_profit_factor_before_leaving_safety_mode": 1.02}
+    pnls = [3.0, 3.0, -2.0, -2.0]
+    m, meta = compute_safety_multiplier_from_pnls(
+        risk, pnls, learning_cfg=learn
+    )
+    assert m == 1.0
+    assert meta.get("safety_mode") == "graduated"
+
+
+def test_legacy_min_profit_factor_in_safety_mode_still_used():
+    risk = {
+        "safety_mode": {
+            "enabled": True,
+            "position_multiplier": 0.5,
+            "min_closed_trades": 4,
+            "min_profit_factor": 1.5,
+            "min_avg_win_loss_ratio": 1.0,
+        }
+    }
+    pnls = [3.0, 3.0, -2.0, -2.0]
+    m, meta = compute_safety_multiplier_from_pnls(risk, pnls, learning_cfg={})
+    assert m == 1.0
+    assert meta.get("safety_mode") == "graduated"
+
+
 def test_validate_scales_position_when_multiplier_below_one():
     cfg = {
         "acp": {"min_trade_size_usd": 10},

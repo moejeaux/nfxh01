@@ -37,15 +37,23 @@ def _avg_win_loss_ratio(pnls: list[float]) -> float:
 def compute_safety_multiplier_from_pnls(
     risk_cfg: dict,
     pnls: list[float],
+    *,
+    learning_cfg: dict | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """Return (multiplier, meta) using ``risk.safety_mode``; multiplier is 1.0 or ``position_multiplier``."""
     sm = risk_cfg.get("safety_mode")
     if not isinstance(sm, dict) or not sm.get("enabled"):
         return 1.0, {"safety_mode": "disabled"}
 
+    learn = learning_cfg or {}
     reduced = float(sm.get("position_multiplier", 0.1))
     min_n = int(sm.get("min_closed_trades", 30))
-    min_pf = float(sm.get("min_profit_factor", 1.05))
+    min_pf_raw = sm.get("min_profit_factor_before_leaving_safety_mode")
+    if min_pf_raw is None:
+        min_pf_raw = learn.get("min_profit_factor_before_leaving_safety_mode")
+    if min_pf_raw is None:
+        min_pf_raw = sm.get("min_profit_factor", 1.05)
+    min_pf = float(min_pf_raw)
     min_rr = float(sm.get("min_avg_win_loss_ratio", 1.0))
 
     if len(pnls) < min_n:
@@ -66,7 +74,7 @@ def compute_safety_multiplier_from_pnls(
         "n": len(pnls),
         "profit_factor": pf,
         "avg_win_loss_ratio": rr,
-        "min_profit_factor": min_pf,
+        "min_profit_factor_before_leaving_safety_mode": min_pf,
         "min_avg_win_loss_ratio": min_rr,
     }
 
@@ -106,7 +114,11 @@ async def refresh_safety_mode(
 
     rows = await journal.fetch_closed_decisions_for_metrics(min_n)
     pnls = [float(r["pnl_usd"]) for r in rows if r.get("pnl_usd") is not None]
-    mult, meta = compute_safety_multiplier_from_pnls(risk_cfg, pnls)
+    mult, meta = compute_safety_multiplier_from_pnls(
+        risk_cfg,
+        pnls,
+        learning_cfg=config.get("learning"),
+    )
     risk_layer.set_safety_position_multiplier(mult)
     logger.info(
         "RISK_SAFETY_MODE_REFRESH multiplier=%.4f n=%s pf=%s rr=%s meta=%s",
