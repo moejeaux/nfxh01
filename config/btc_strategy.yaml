@@ -1,6 +1,6 @@
 # Merged under config root as btc_strategy: (see load_config). All thresholds are referenced from code via this namespace.
-# Tuning pass: conservative rollout (v1.0.1) — tighter regime/supervisor, smaller lane sizes, stricter churn caps, engine risk gates vs total_capital_usd ~10k in main config.
-detector_version: "1.0.1"
+# Risk gates: percentages use reference_capital_usd if set (match live HL equity), else risk.total_capital_usd from main config.yaml.
+detector_version: "1.0.2"
 
 thresholds:
   trend_min: 0.006
@@ -34,16 +34,14 @@ lanes:
     rsi_period: 14
     rsi_extreme: 74.0
 
-limits:
-  max_opens_per_day_trend: 2
-  max_opens_per_day_regression: 2
-  max_opens_per_session_trend: 2
-  max_opens_per_session_regression: 2
-
-# Engine-local gates (USD). Scale up if total_capital_usd in config.yaml is much larger than ~10k.
 risk_gates:
-  max_daily_loss_usd_btc_engine: 200.0
-  max_btc_gross_usd: 3000.0
+  # Set to your live Hyperliquid account equity (USD) so pct caps track wallet; null = use risk.total_capital_usd from config.yaml.
+  reference_capital_usd: null
+  max_daily_loss_pct_of_capital: 0.02
+  max_btc_gross_pct_of_capital: 0.30
+  # Optional hard USD ceilings (applied if set; otherwise only percentages apply).
+  max_daily_loss_usd_btc_engine: null
+  max_btc_gross_usd: null
 
 data:
   intervals:
