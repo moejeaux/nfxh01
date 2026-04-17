@@ -42,6 +42,7 @@ class PostImpulseRegressionStrategy:
 
         meta_base = {
             "lane": "regression",
+            "strategy_style": "mean_reversion",
             "btc_regime": regime.primary_regime.value,
             "btc_regime_confidence": float(regime.confidence),
             "btc_detector_version": dv,

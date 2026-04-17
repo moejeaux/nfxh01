@@ -43,6 +43,7 @@ class TrendContinuationStrategy:
         last = closes[-1]
         meta_base = {
             "lane": "trend",
+            "strategy_style": "continuation",
             "btc_regime": pr.value,
             "btc_regime_confidence": float(regime.confidence),
             "btc_detector_version": dv,

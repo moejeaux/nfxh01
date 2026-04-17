@@ -9,6 +9,15 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def engine_id_to_strategy_key(config: dict | None, engine_id: str) -> str | None:
+    if not config:
+        return None
+    for sk, row in (config.get("strategies") or {}).items():
+        if isinstance(row, dict) and str(row.get("engine_id", "")) == str(engine_id):
+            return str(sk)
+    return None
+
+
 def _user_state_compat(hl_client: Any, address: str) -> Any:
     """Prefer nested ``client.info.user_state`` (tests / wrappers), else ``client.user_state`` (HL SDK)."""
     inner = getattr(hl_client, "info", None)
@@ -217,6 +226,74 @@ class PortfolioState:
                     "(HL shows position; run sync_from_hl to import or verify attribution)",
                     c,
                 )
+
+    def resolve_btc_sensitivity_tier(self, coin: str, engine_id: str, config: dict) -> str:
+        pol = config.get("btc_context_policy") or {}
+        cj = (pol.get("coin_sensitivity") or {}).get((coin or "").strip().upper())
+        if cj in ("low", "medium", "high"):
+            return str(cj)
+        sk = engine_id_to_strategy_key(config, engine_id)
+        row = (config.get("strategies") or {}).get(sk) if sk else None
+        tier = (row or {}).get("btc_sensitivity") if isinstance(row, dict) else None
+        if tier in ("low", "medium", "high"):
+            return str(tier)
+        return "medium"
+
+    def btc_sensitivity_weight(self, tier: str, config: dict) -> float:
+        pol = (config.get("btc_context_policy") or {}).get("portfolio_beta") or {}
+        wmap = pol.get("sensitivity_weight") or {}
+        return float(wmap.get(tier, wmap.get("medium", 1.0)))
+
+    def portfolio_btc_weighted_exposure(self, config: dict) -> tuple[float, float, int]:
+        long_b = 0.0
+        short_b = 0.0
+        high_n = 0
+        for eid, pmap in self._positions.items():
+            for pos in pmap.values():
+                coin = pos.signal.coin
+                tier = self.resolve_btc_sensitivity_tier(coin, eid, config)
+                w = self.btc_sensitivity_weight(tier, config)
+                usd = abs(float(pos.signal.position_size_usd))
+                contrib = usd * w
+                if pos.signal.side == "long":
+                    long_b += contrib
+                else:
+                    short_b += contrib
+                if tier == "high":
+                    high_n += 1
+        return long_b, short_b, high_n
+
+    def get_estimated_btc_beta_long(self, config: dict) -> float:
+        long_b, _, _ = self.portfolio_btc_weighted_exposure(config)
+        return long_b
+
+    def get_estimated_btc_beta_short(self, config: dict) -> float:
+        _, short_b, _ = self.portfolio_btc_weighted_exposure(config)
+        return short_b
+
+    def get_num_high_beta_positions(self, config: dict) -> int:
+        _, _, n = self.portfolio_btc_weighted_exposure(config)
+        return n
+
+    def would_exceed_btc_beta_cap(
+        self,
+        signal: Any,
+        proposed_size_usd: float,
+        engine_id: str,
+        config: dict,
+    ) -> bool:
+        pol = (config.get("btc_context_policy") or {}).get("portfolio_beta") or {}
+        if not pol.get("enabled", True):
+            return False
+        max_l = float(pol.get("max_long", 1e18))
+        max_s = float(pol.get("max_short", 1e18))
+        tier = self.resolve_btc_sensitivity_tier(signal.coin, engine_id, config)
+        w = self.btc_sensitivity_weight(tier, config)
+        long_b, short_b, _ = self.portfolio_btc_weighted_exposure(config)
+        add = float(proposed_size_usd) * w
+        if signal.side == "long":
+            return long_b + add > max_l
+        return short_b + add > max_s
 
 
 @dataclass

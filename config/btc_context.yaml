@@ -1,0 +1,24 @@
+# Merged at config root as key ``btc_context`` (see load_config in runtime).
+# All numeric thresholds live here — do not hardcode in code paths.
+
+btc_context:
+  enabled: true
+  log_only_on_change: false
+  min_5m_bars: 12
+  min_15m_bars: 8
+  min_1h_bars: 8
+  trend_score_divisor: 0.02
+  vol_ratio_high: 1.8
+  vol_ratio_reference: 2.5
+  vol_ratio_shock: 2.0
+  impulse_lookback_5m_bars: 4
+  impulse_normalization_pct: 0.015
+  impulse_pct_shock: 0.008
+  impulse_score_shock: 0.85
+  extension_cap_abs_dist: 0.025
+  risk_yellow_vol_score: 0.55
+  risk_red_vol_score: 0.85
+  post_impulse_min_extension_score: 0.45
+  post_impulse_min_impulse_score: 0.5
+  post_impulse_shock_mult: 0.85
+  mean_revert_post_impulse_impulse: 0.55

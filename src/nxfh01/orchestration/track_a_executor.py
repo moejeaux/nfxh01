@@ -91,6 +91,8 @@ class TrackAExecutor:
                 coin=intent.coin.strip(),
                 side=intent.side,
                 position_size_usd=float(intent.position_size_usd),
+                strategy_key=str(intent.strategy_key),
+                metadata=dict(intent.metadata or {}),
             )
             decision = self._risk_layer.validate(risk_signal, intent.engine_id)
             if not decision.approved:
@@ -123,6 +125,7 @@ class TrackAExecutor:
                 stop_loss_price=float(sl) if sl is not None else 0.0,
                 take_profit_price=float(tp) if tp is not None else 0.0,
                 strategy_key=str(intent.strategy_key),
+                metadata=dict(intent.metadata or {}),
             )
 
             lev = self._leverage_for(intent)

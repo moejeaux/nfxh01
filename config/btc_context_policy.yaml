@@ -1,0 +1,45 @@
+# Merged at config root as ``btc_context_policy`` (see load_config).
+# Feature flags default conservative; enable sizing/veto after log review.
+
+btc_context_policy:
+  enabled_for_sizing: true
+  enabled_for_veto: true
+  enabled_for_portfolio_beta: true
+  missing_context_treat_as_shock: true
+  align:
+    conflict_veto: false
+    conflict_size_mult: 0.25
+  shock:
+    block_all_entries: true
+    min_weakness_score_bypass: 0.72
+  risk_mode_red:
+    size_mult: 0.4
+  high_vol_regime:
+    size_mult: 0.6
+  regime_size_mult:
+    trending_up: 1.0
+    trending_down: 1.0
+    range: 1.0
+    high_volatility: 0.85
+    post_impulse: 0.9
+  portfolio_beta:
+    enabled: true
+    max_long: 50000.0
+    max_short: 50000.0
+    sensitivity_weight:
+      low: 0.5
+      medium: 1.0
+      high: 1.5
+  post_impulse:
+    block_continuation: true
+    min_extension_score: 0.45
+    continuation_metadata_key: strategy_style
+    continuation_values:
+      - continuation
+      - trend
+  engine_overrides:
+    btc_lanes:
+      skip_conflict_veto: true
+      skip_shock_veto: true
+      shock_size_mult: 1.0
+      conflict_size_mult: 1.0

@@ -25,6 +25,8 @@ from src.exits.manager import LiveExitEngine
 from src.nxfh01.orchestration.strategy_orchestrator import StrategyOrchestrator
 from src.nxfh01.orchestration.strategy_registry import StrategyRegistry
 from src.nxfh01.orchestration.track_a_executor import TrackAExecutor
+from src.market.btc_context_engine import BTCMarketContextEngine
+from src.market.btc_context_holder import BTCMarketContextHolder
 from src.market_data.hl_rate_limited_info import RateLimitedInfo
 from src.regime.detector import RegimeDetector
 from src.risk.engine_killswitch import KillSwitch
@@ -52,6 +54,13 @@ def load_config() -> dict:
             existing = root.get("btc_strategy")
             base = existing if isinstance(existing, dict) else {}
             root["btc_strategy"] = deep_merge(base, btc_raw)
+    for extra_name in ("btc_context.yaml", "btc_context_policy.yaml"):
+        xp = config_path.parent / "config" / extra_name
+        if xp.is_file():
+            with open(xp, encoding="utf-8") as f:
+                chunk = yaml.safe_load(f)
+            if isinstance(chunk, dict):
+                root = deep_merge(root, chunk)
     return root
 
 
@@ -126,7 +135,11 @@ async def build_context(config: dict) -> dict:
 
     kill_switch = KillSwitch(config)
     portfolio_state = PortfolioState()
-    risk_layer = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+    btc_context_holder = BTCMarketContextHolder()
+    btc_context_engine = BTCMarketContextEngine(config)
+    risk_layer = UnifiedRiskLayer(
+        config, portfolio_state, kill_switch, btc_context_holder=btc_context_holder
+    )
 
     hl_client = await init_hl_client(config)
     regime_detector = RegimeDetector(config, data_fetcher=None)
@@ -234,6 +247,8 @@ async def build_context(config: dict) -> dict:
         degen_executor=degen_executor,
         hl_client=hl_client,
         track_exit_engine=track_exit_engine,
+        btc_context_engine=btc_context_engine,
+        btc_context_holder=btc_context_holder,
     )
 
     tick_interval = float(
@@ -246,6 +261,8 @@ async def build_context(config: dict) -> dict:
         "kill_switch": kill_switch,
         "portfolio_state": portfolio_state,
         "risk_layer": risk_layer,
+        "btc_context_engine": btc_context_engine,
+        "btc_context_holder": btc_context_holder,
         "hl_client": hl_client,
         "regime_detector": regime_detector,
         "journal": journal,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -13,6 +15,7 @@ from src.nxfh01.orchestration.scheduling import should_run_strategy
 from src.nxfh01.orchestration.strategy_registry import StrategyRegistry
 from src.nxfh01.orchestration.track_a_executor import TrackAExecutor
 from src.nxfh01.orchestration.track_a_exits import run_track_a_exits
+from src.market_data.btc_regime_candles import fetch_btc_candle_bundle
 from src.nxfh01.orchestration.types import (
     NormalizedEntryIntent,
     OrchestratorTickSummary,
@@ -36,6 +39,8 @@ class StrategyOrchestrator:
         degen_executor: Any | None = None,
         hl_client: Any | None = None,
         track_exit_engine: LiveExitEngine | None = None,
+        btc_context_engine: Any | None = None,
+        btc_context_holder: Any | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -45,6 +50,8 @@ class StrategyOrchestrator:
         self._degen_executor = degen_executor
         self._hl_client = hl_client
         self._track_exit_engine = track_exit_engine
+        self._btc_context_engine = btc_context_engine
+        self._btc_context_holder = btc_context_holder
 
         orch = config.get("orchestration") or {}
         self._execution_order: list[str] = list(
@@ -66,6 +73,31 @@ class StrategyOrchestrator:
         now = now or datetime.now(timezone.utc)
         tick_results: list[StrategyTickResult] = []
         track_a_intents: list[NormalizedEntryIntent] = []
+
+        bc = self._config.get("btc_context") or {}
+        if (
+            bc.get("enabled", False)
+            and self._btc_context_engine is not None
+            and self._btc_context_holder is not None
+            and self._hl_client is not None
+        ):
+            try:
+                bundle = await fetch_btc_candle_bundle(self._hl_client, self._config)
+                ctx = self._btc_context_engine.build_context(now, bundle)
+                self._btc_context_holder.set_context(ctx, tick_at=now)
+                payload = ctx.model_dump(mode="json")
+                blob = json.dumps(payload, sort_keys=True, default=str)
+                digest = hashlib.sha256(blob.encode()).hexdigest()[:16]
+                if bc.get("log_only_on_change", False):
+                    if self._btc_context_holder.last_log_digest != digest:
+                        self._btc_context_holder.set_log_digest(digest)
+                        logger.info("RISK_BTC_CONTEXT digest=%s %s", digest, blob)
+                else:
+                    logger.info("RISK_BTC_CONTEXT digest=%s %s", digest, blob)
+                    self._btc_context_holder.set_log_digest(digest)
+            except Exception as e:
+                logger.warning("RISK_BTC_CONTEXT_FETCH_FAIL error=%s", e, exc_info=True)
+                self._btc_context_holder.set_context(None, tick_at=now)
 
         if (
             self._portfolio_state is not None

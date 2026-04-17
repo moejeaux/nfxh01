@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass
@@ -17,6 +18,7 @@ class TrackARiskSignal:
     stop_loss_price: float = 0.0
     take_profit_price: float = 0.0
     strategy_key: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

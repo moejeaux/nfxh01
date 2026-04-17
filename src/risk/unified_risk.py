@@ -3,16 +3,45 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.market.btc_context import (
+    BTCAlignment,
+    BTCRegime,
+    BTCRiskMode,
+    compute_btc_alignment,
+)
+from src.market.btc_context_holder import BTCMarketContextHolder
 from src.risk.portfolio_state import PortfolioState, RiskDecision
 
 logger = logging.getLogger(__name__)
 
 
+def _signal_metadata(signal: Any) -> dict[str, Any]:
+    m = getattr(signal, "metadata", None)
+    return m if isinstance(m, dict) else {}
+
+
+def _signal_weakness(signal: Any) -> float | None:
+    w = getattr(signal, "weakness_score", None)
+    if w is None:
+        return None
+    try:
+        return float(w)
+    except (TypeError, ValueError):
+        return None
+
+
 class UnifiedRiskLayer:
-    def __init__(self, config: dict, portfolio_state: PortfolioState, kill_switch: Any) -> None:
+    def __init__(
+        self,
+        config: dict,
+        portfolio_state: PortfolioState,
+        kill_switch: Any,
+        btc_context_holder: BTCMarketContextHolder | None = None,
+    ) -> None:
         self._config = config
         self._portfolio_state = portfolio_state
         self._kill_switch = kill_switch
+        self._btc_holder = btc_context_holder
         self._risk_cfg = config.get("risk", {})
         self._safety_position_multiplier = 1.0
 
@@ -49,6 +78,10 @@ class UnifiedRiskLayer:
                 base_size,
                 signal.position_size_usd,
             )
+
+        btc_early = self._btc_market_overlay(signal, engine_id)
+        if btc_early is not None:
+            return btc_early
 
         acp_cfg = self._config.get("acp") or {}
         min_trade = acp_cfg.get("min_trade_size_usd")
@@ -105,6 +138,182 @@ class UnifiedRiskLayer:
             engine_id, signal.coin, signal.side, signal.position_size_usd,
         )
         return RiskDecision(approved=True, reason="approved")
+
+    def _btc_market_overlay(self, signal: Any, engine_id: str) -> RiskDecision | None:
+        pol = self._config.get("btc_context_policy") or {}
+        ev = bool(pol.get("enabled_for_veto", False))
+        es = bool(pol.get("enabled_for_sizing", False))
+        eb = bool(pol.get("enabled_for_portfolio_beta", False))
+        if not ev and not es and not eb:
+            return None
+
+        ov = (pol.get("engine_overrides") or {}).get(engine_id) or {}
+        if self._btc_holder is None:
+            if ev and pol.get("missing_context_treat_as_shock", True) and not ov.get(
+                "skip_shock_veto"
+            ):
+                logger.warning(
+                    "RISK_REJECTED engine=%s reason=btc_shock (no_holder)",
+                    engine_id,
+                )
+                return RiskDecision(approved=False, reason="btc_shock")
+            return None
+
+        ctx = self._btc_holder.snapshot
+        md = _signal_metadata(signal)
+
+        if ctx is None:
+            if ev and pol.get("missing_context_treat_as_shock", True) and not ov.get(
+                "skip_shock_veto"
+            ):
+                logger.warning(
+                    "RISK_REJECTED engine=%s reason=btc_shock (missing_context)",
+                    engine_id,
+                )
+                return RiskDecision(approved=False, reason="btc_shock")
+            if es or eb:
+                logger.warning(
+                    "RISK_BTC_CONTEXT_MISSING engine=%s sizing_or_beta_skipped=True",
+                    engine_id,
+                )
+            return None
+
+        alignment = compute_btc_alignment(signal.side, ctx.regime, ctx.risk_mode)
+
+        if ev:
+            if ctx.shock_state and (pol.get("shock") or {}).get("block_all_entries", True):
+                if ov.get("skip_shock_veto"):
+                    pass
+                else:
+                    bypass = (pol.get("shock") or {}).get("min_weakness_score_bypass")
+                    ws = _signal_weakness(signal)
+                    if bypass is not None and ws is not None and ws >= float(bypass):
+                        logger.info(
+                            "RISK_BTC_SHOCK_BYPASS engine=%s weakness=%.4f min=%.4f",
+                            engine_id,
+                            ws,
+                            float(bypass),
+                        )
+                    else:
+                        logger.warning(
+                            "RISK_REJECTED engine=%s reason=btc_shock",
+                            engine_id,
+                        )
+                        self._log_btc_decision(
+                            engine_id, signal, ctx, alignment, 0.0, "btc_shock", md,
+                        )
+                        return RiskDecision(approved=False, reason="btc_shock")
+
+            align_cfg = pol.get("align") or {}
+            conflict_veto = bool(align_cfg.get("conflict_veto", False))
+            if (
+                conflict_veto
+                and alignment == BTCAlignment.CONFLICT
+                and not ov.get("skip_conflict_veto")
+            ):
+                logger.warning(
+                    "RISK_REJECTED engine=%s reason=btc_trend_conflict",
+                    engine_id,
+                )
+                self._log_btc_decision(
+                    engine_id, signal, ctx, alignment, 0.0, "btc_trend_conflict", md,
+                )
+                return RiskDecision(approved=False, reason="btc_trend_conflict")
+
+            pi = pol.get("post_impulse") or {}
+            if bool(pi.get("block_continuation", False)) and ctx.regime == BTCRegime.POST_IMPULSE:
+                key = str(pi.get("continuation_metadata_key", "strategy_style"))
+                raw_vals = pi.get("continuation_values") or []
+                vals = {str(x).lower() for x in raw_vals}
+                meta_val = str(md.get(key, "")).lower()
+                min_ext = float(pi.get("min_extension_score", 0.45))
+                if meta_val and meta_val in vals and ctx.extension_score >= min_ext:
+                    logger.warning(
+                        "RISK_REJECTED engine=%s reason=btc_post_impulse_extension",
+                        engine_id,
+                    )
+                    self._log_btc_decision(
+                        engine_id,
+                        signal,
+                        ctx,
+                        alignment,
+                        0.0,
+                        "btc_post_impulse_extension",
+                        md,
+                    )
+                    return RiskDecision(approved=False, reason="btc_post_impulse_extension")
+
+        size_mult = 1.0
+        if es:
+            rs = pol.get("regime_size_mult") or {}
+            rk = ctx.regime.value
+            size_mult *= float(rs.get(rk, 1.0))
+            if ctx.risk_mode == BTCRiskMode.RED:
+                size_mult *= float((pol.get("risk_mode_red") or {}).get("size_mult", 1.0))
+            if ctx.regime == BTCRegime.HIGH_VOL:
+                size_mult *= float((pol.get("high_vol_regime") or {}).get("size_mult", 1.0))
+            if alignment == BTCAlignment.CONFLICT:
+                cm = ov.get("conflict_size_mult")
+                if cm is None:
+                    cm = (pol.get("align") or {}).get("conflict_size_mult", 0.25)
+                size_mult *= float(cm)
+            size_mult *= float(ov.get("extra_size_mult", 1.0))
+
+        if es and size_mult != 1.0:
+            before = float(signal.position_size_usd)
+            signal.position_size_usd = before * size_mult
+            logger.info(
+                "RISK_BTC_SIZE_MULT engine=%s mult=%.4f before=%.2f after=%.2f",
+                engine_id,
+                size_mult,
+                before,
+                signal.position_size_usd,
+            )
+
+        if eb and self._portfolio_state.would_exceed_btc_beta_cap(
+            signal, float(signal.position_size_usd), engine_id, self._config
+        ):
+            logger.warning(
+                "RISK_REJECTED engine=%s reason=portfolio_btc_beta_cap",
+                engine_id,
+            )
+            self._log_btc_decision(
+                engine_id, signal, ctx, alignment, size_mult, "portfolio_btc_beta_cap", md,
+            )
+            return RiskDecision(approved=False, reason="portfolio_btc_beta_cap")
+
+        if ev or es or eb:
+            self._log_btc_decision(
+                engine_id, signal, ctx, alignment, size_mult, "none", md,
+            )
+        return None
+
+    def _log_btc_decision(
+        self,
+        engine_id: str,
+        signal: Any,
+        ctx: Any,
+        alignment: BTCAlignment,
+        size_mult: float,
+        deny: str,
+        md: dict[str, Any],
+    ) -> None:
+        logger.info(
+            "RISK_BTC_DECISION engine=%s coin=%s side=%s alignment=%s regime=%s risk_mode=%s "
+            "shock=%s extension=%.4f vol=%.4f mult=%.4f deny=%s meta=%s",
+            engine_id,
+            getattr(signal, "coin", ""),
+            getattr(signal, "side", ""),
+            alignment.value,
+            ctx.regime.value,
+            ctx.risk_mode.value,
+            ctx.shock_state,
+            ctx.extension_score,
+            ctx.volatility_score,
+            size_mult,
+            deny,
+            md,
+        )
 
     def check_global_rules(self) -> dict:
         dd = self._portfolio_state.get_portfolio_drawdown_24h()

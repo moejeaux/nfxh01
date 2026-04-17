@@ -161,6 +161,8 @@ class TestBuildContext:
             "kill_switch",
             "portfolio_state",
             "risk_layer",
+            "btc_context_engine",
+            "btc_context_holder",
             "hl_client",
             "regime_detector",
             "journal",
