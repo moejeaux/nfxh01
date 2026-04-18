@@ -249,6 +249,7 @@ async def build_context(config: dict) -> dict:
         track_exit_engine=track_exit_engine,
         btc_context_engine=btc_context_engine,
         btc_context_holder=btc_context_holder,
+        decision_journal=journal,
     )
 
     tick_interval = float(

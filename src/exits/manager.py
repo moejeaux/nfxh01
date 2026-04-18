@@ -7,7 +7,7 @@ from typing import Any
 
 from src.exits.models import Side, UniversalExit
 from src.exits.policy_config import resolve_exit_policy
-from src.exits.policies import evaluate_exit, update_extremes_and_peak
+from src.exits.policies import evaluate_exit, unrealized_r_multiple, update_extremes_and_peak
 from src.exits.state import ExitStateStore
 from src.regime.models import RegimeType
 
@@ -269,6 +269,12 @@ class LiveExitEngine:
                 regime_exit_all=regime_exit_all,
             )
             if ev.should_exit:
+                # Capture R-multiple diagnostics BEFORE store.remove(); the state object
+                # holds peak favorable excursion across every prior evaluation tick and is
+                # the only source of truth for peak_r_capture_ratio downstream.
+                peak_r = float(st.peak_r_multiple)
+                realized_r = float(unrealized_r_multiple(st, price))
+                capture = (realized_r / peak_r) if peak_r > 0 else None
                 logger.info(
                     "%s position_id=%s coin=%s side=%s reason=%s pnl_usd=%.4f pnl_pct=%.5f",
                     ev.log_tag,
@@ -278,6 +284,17 @@ class LiveExitEngine:
                     ev.exit_reason,
                     ev.pnl_usd,
                     ev.pnl_pct,
+                )
+                logger.info(
+                    "EXIT_R_METRICS position_id=%s coin=%s side=%s reason=%s "
+                    "peak_r=%.4f realized_r=%.4f capture=%s",
+                    pos.position_id,
+                    coin,
+                    side,
+                    ev.exit_reason,
+                    peak_r,
+                    realized_r,
+                    f"{capture:.4f}" if capture is not None else "None",
                 )
                 out.append(
                     UniversalExit(
@@ -292,6 +309,8 @@ class LiveExitEngine:
                         stop_loss_price=sl,
                         take_profit_price=tp,
                         engine_id=engine_id,
+                        peak_r_multiple=peak_r,
+                        realized_r_multiple=realized_r,
                     )
                 )
                 self._store.remove(pos.position_id)

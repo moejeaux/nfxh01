@@ -24,6 +24,8 @@ class AceExit:
     entry_price: float | None = None
     stop_loss_price: float | None = None
     take_profit_price: float | None = None
+    peak_r_multiple: float | None = None
+    realized_r_multiple: float | None = None
 
 
 def _to_ace_exit(u: UniversalExit) -> AceExit:
@@ -38,6 +40,8 @@ def _to_ace_exit(u: UniversalExit) -> AceExit:
         entry_price=u.entry_price,
         stop_loss_price=u.stop_loss_price,
         take_profit_price=u.take_profit_price,
+        peak_r_multiple=u.peak_r_multiple,
+        realized_r_multiple=u.realized_r_multiple,
     )
 
 

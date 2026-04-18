@@ -4,23 +4,27 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.acp.degen_claw import AcpCloseRequest
 from src.exits.manager import LiveExitEngine
 from src.exits.models import UniversalExit
 from src.risk.portfolio_state import PortfolioState
 
+if TYPE_CHECKING:
+    from src.db.decision_journal import DecisionJournal
+
 logger = logging.getLogger(__name__)
 
 
-def run_track_a_exits(
+async def run_track_a_exits(
     config: dict[str, Any],
     *,
     portfolio_state: PortfolioState,
     degen_executor: Any,
     hl_client: Any,
     exit_engine: LiveExitEngine,
+    decision_journal: DecisionJournal | None = None,
 ) -> None:
     root = config.get("exits") or {}
     if not root.get("enabled", True):
@@ -51,14 +55,22 @@ def run_track_a_exits(
             strategy_key=strategy_key,
         )
         for u in universal:
-            _apply_close(portfolio_state, degen_executor, engine_id, u)
+            await _apply_close(
+                portfolio_state,
+                degen_executor,
+                engine_id,
+                u,
+                decision_journal=decision_journal,
+            )
 
 
-def _apply_close(
+async def _apply_close(
     portfolio_state: PortfolioState,
     degen_executor: Any,
     engine_id: str,
     u: UniversalExit,
+    *,
+    decision_journal: DecisionJournal | None = None,
 ) -> None:
     try:
         degen_executor.submit_close(
@@ -88,3 +100,18 @@ def _apply_close(
         u.exit_reason,
         u.pnl_usd,
     )
+
+    # DB persistence is best-effort: if the journal is absent or the row was never
+    # inserted (e.g. HL-sync imported position), skip without failing the close.
+    if decision_journal is None or not decision_journal.is_connected():
+        return
+    try:
+        await decision_journal.log_track_a_exit(position_id=u.position_id, exit=u)
+    except Exception as e:
+        logger.warning(
+            "EXIT_TRACK_A_JOURNAL_FAILED position_id=%s coin=%s engine_id=%s error=%s",
+            u.position_id,
+            u.coin,
+            engine_id,
+            e,
+        )

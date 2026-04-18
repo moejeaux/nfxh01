@@ -66,6 +66,71 @@ def worst_coins_by_pnl(closed: list[dict[str, Any]], limit: int = 8) -> list[dic
     return [{"coin": k, "pnl_usd": v} for k, v in ranked[:limit]]
 
 
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    if n % 2 == 1:
+        return s[mid]
+    return 0.5 * (s[mid - 1] + s[mid])
+
+
+def peak_r_capture_stats(closed: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate peak_r / realized_r / capture across closed trades.
+
+    Null-safe: rows predating the Phase 1 migration (``peak_r_multiple`` NULL) are
+    excluded from mean/median rather than coerced to 0.0, which would bias the
+    retrospective prompt toward "we capture nothing" on back-populated history.
+    """
+    captures: list[float] = []
+    peaks: list[float] = []
+    realized: list[float] = []
+    weighted_miss_num = 0.0
+    weighted_miss_den = 0.0
+
+    for r in closed:
+        pk = r.get("peak_r_multiple")
+        rl = r.get("realized_r_multiple")
+        if pk is None or rl is None:
+            continue
+        try:
+            pk_f = float(pk)
+            rl_f = float(rl)
+        except (TypeError, ValueError):
+            continue
+        peaks.append(pk_f)
+        realized.append(rl_f)
+        if pk_f > 0:
+            captures.append(rl_f / pk_f)
+        # missed_profit weighted by position size; trades missing size_usd
+        # contribute nothing (size 0) rather than distorting the mean.
+        try:
+            sz = float(r.get("position_size_usd") or 0.0)
+        except (TypeError, ValueError):
+            sz = 0.0
+        if sz > 0:
+            weighted_miss_num += (pk_f - rl_f) * sz
+            weighted_miss_den += sz
+
+    def _mean(xs: list[float]) -> float | None:
+        return (sum(xs) / len(xs)) if xs else None
+
+    missed_profit_delta = (
+        weighted_miss_num / weighted_miss_den if weighted_miss_den > 0 else None
+    )
+
+    return {
+        "sample_size": len(peaks),
+        "mean_peak_r_multiple": _mean(peaks),
+        "mean_realized_r_multiple": _mean(realized),
+        "mean_peak_r_capture_ratio": _mean(captures),
+        "median_peak_r_capture_ratio": _median(captures),
+        "missed_profit_delta_r_weighted_by_size": missed_profit_delta,
+    }
+
+
 def build_metrics_from_decision_rows(
     rows: list[dict[str, Any]],
     *,
@@ -113,6 +178,7 @@ def build_extended_performance_snapshot(
 
         digest = build_decisions_digest(rows)
 
+    peak_r = peak_r_capture_stats(closed)
     ext = {
         "closing_trade_count": snap.closing_trade_count,
         "global_profit_factor": snap.global_profit_factor
@@ -125,8 +191,9 @@ def build_extended_performance_snapshot(
         "consecutive_loss_streak": consecutive_loss_streak(closed),
         "worst_coins": worst_coins_by_pnl(closed),
         "digest": digest,
-        "peak_r_capture_ratio": None,
-        "missed_profit_delta": None,
+        "peak_r_capture_ratio": peak_r["mean_peak_r_capture_ratio"],
+        "peak_r_capture_stats": peak_r,
+        "missed_profit_delta": peak_r["missed_profit_delta_r_weighted_by_size"],
         "config_change_effectiveness_score": learning_effectiveness or {},
     }
     return ext

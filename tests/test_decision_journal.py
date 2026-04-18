@@ -154,15 +154,14 @@ async def test_log_exit_updates_record(decision_journal, mock_pool, sample_exit)
     """Test logging exit updates decision record."""
     pool, conn = mock_pool
     decision_journal._pool = pool
-    
+
     decision_id = str(uuid4())
     regime_at_close = "TRENDING_UP"
-    
+
     await decision_journal.log_exit(decision_id, sample_exit, regime_at_close)
-    
+
     conn.execute.assert_called_once()
-    
-    # Verify SQL parameters
+
     call_args = conn.execute.call_args[0]
     assert call_args[1] == 48000.0  # exit_price
     assert call_args[2] == "take_profit"  # exit_reason
@@ -171,7 +170,12 @@ async def test_log_exit_updates_record(decision_journal, mock_pool, sample_exit)
     assert call_args[5] == 3600  # hold_duration_seconds
     assert isinstance(call_args[6], datetime)  # outcome_recorded_at
     assert call_args[7] == "TRENDING_UP"  # regime_at_close
-    assert call_args[8] == decision_id  # WHERE id
+    # Peak-R columns added in migration 004; pre-existing AceExit fixture
+    # leaves them unset so they bind as NULL.
+    assert call_args[8] is None  # peak_r_multiple
+    assert call_args[9] is None  # realized_r_multiple
+    assert call_args[10] is None  # peak_r_capture_ratio
+    assert call_args[11] == decision_id  # WHERE id
 
 
 @pytest.mark.asyncio

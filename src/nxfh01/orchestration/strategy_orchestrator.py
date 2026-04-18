@@ -41,6 +41,7 @@ class StrategyOrchestrator:
         track_exit_engine: LiveExitEngine | None = None,
         btc_context_engine: Any | None = None,
         btc_context_holder: Any | None = None,
+        decision_journal: Any | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -52,6 +53,7 @@ class StrategyOrchestrator:
         self._track_exit_engine = track_exit_engine
         self._btc_context_engine = btc_context_engine
         self._btc_context_holder = btc_context_holder
+        self._decision_journal = decision_journal
 
         orch = config.get("orchestration") or {}
         self._execution_order: list[str] = list(
@@ -105,12 +107,13 @@ class StrategyOrchestrator:
             and self._hl_client is not None
             and self._track_exit_engine is not None
         ):
-            run_track_a_exits(
+            await run_track_a_exits(
                 self._config,
                 portfolio_state=self._portfolio_state,
                 degen_executor=self._degen_executor,
                 hl_client=self._hl_client,
                 exit_engine=self._track_exit_engine,
+                decision_journal=self._decision_journal,
             )
 
         for sk in self._execution_order:

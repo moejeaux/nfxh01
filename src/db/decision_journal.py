@@ -7,9 +7,23 @@ from uuid import UUID
 
 from src.engines.acevault.models import AceSignal
 from src.engines.acevault.exit import AceExit
+from src.exits.models import UniversalExit
 from src.nxfh01.orchestration.types import NormalizedEntryIntent
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_capture_ratio(
+    peak_r: float | None, realized_r: float | None
+) -> float | None:
+    # peak_r of zero (or missing) means no favorable excursion was recorded;
+    # return None so downstream aggregates exclude the trade rather than treat
+    # it as "captured 0%" (which would bias the mean downwards).
+    if peak_r is None or realized_r is None:
+        return None
+    if peak_r <= 0:
+        return None
+    return realized_r / peak_r
 
 
 class DecisionJournal:
@@ -148,6 +162,53 @@ class DecisionJournal:
         )
         return rid
 
+    async def log_track_a_exit(
+        self, *, position_id: str, exit: UniversalExit
+    ) -> None:
+        """Persist a Track A close into ``strategy_decisions`` (row id == position_id)."""
+        if self._pool is None:
+            raise RuntimeError("DecisionJournal not connected - call connect() first")
+
+        peak_r = exit.peak_r_multiple
+        realized_r = exit.realized_r_multiple
+        capture_ratio = _safe_capture_ratio(peak_r, realized_r)
+
+        query = """
+        UPDATE strategy_decisions
+        SET exit_price = $1, exit_reason = $2, pnl_usd = $3, pnl_pct = $4,
+            hold_duration_seconds = $5, outcome_recorded_at = $6,
+            peak_r_multiple = $7, realized_r_multiple = $8, peak_r_capture_ratio = $9
+        WHERE id = $10::uuid
+        """
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                query,
+                float(exit.exit_price),
+                exit.exit_reason,
+                float(exit.pnl_usd),
+                float(exit.pnl_pct),
+                int(exit.hold_duration_seconds),
+                datetime.now(timezone.utc),
+                peak_r,
+                realized_r,
+                capture_ratio,
+                position_id,
+            )
+
+        logger.info(
+            "DECISION_JOURNAL_TRACK_A_EXIT_LOGGED position_id=%s coin=%s engine_id=%s "
+            "exit_reason=%s pnl_usd=%.4f peak_r=%s realized_r=%s capture=%s",
+            position_id,
+            exit.coin,
+            exit.engine_id,
+            exit.exit_reason,
+            exit.pnl_usd,
+            f"{peak_r:.4f}" if peak_r is not None else "None",
+            f"{realized_r:.4f}" if realized_r is not None else "None",
+            f"{capture_ratio:.4f}" if capture_ratio is not None else "None",
+        )
+
     async def log_exit(
         self, decision_id: str, exit: AceExit, regime_at_close: str
     ) -> None:
@@ -155,11 +216,16 @@ class DecisionJournal:
         if self._pool is None:
             raise RuntimeError("DecisionJournal not connected - call connect() first")
 
+        peak_r = exit.peak_r_multiple
+        realized_r = exit.realized_r_multiple
+        capture_ratio = _safe_capture_ratio(peak_r, realized_r)
+
         query = """
-        UPDATE acevault_decisions 
+        UPDATE acevault_decisions
         SET exit_price = $1, exit_reason = $2, pnl_usd = $3, pnl_pct = $4,
-            hold_duration_seconds = $5, outcome_recorded_at = $6, regime_at_close = $7
-        WHERE id = $8
+            hold_duration_seconds = $5, outcome_recorded_at = $6, regime_at_close = $7,
+            peak_r_multiple = $8, realized_r_multiple = $9, peak_r_capture_ratio = $10
+        WHERE id = $11
         """
 
         async with self._pool.acquire() as conn:
@@ -172,15 +238,22 @@ class DecisionJournal:
                 exit.hold_duration_seconds,
                 datetime.now(timezone.utc),
                 regime_at_close,
+                peak_r,
+                realized_r,
+                capture_ratio,
                 decision_id,
             )
 
         logger.info(
-            "DECISION_JOURNAL_EXIT_LOGGED decision_id=%s coin=%s exit_reason=%s pnl_usd=%.2f",
+            "DECISION_JOURNAL_EXIT_LOGGED decision_id=%s coin=%s exit_reason=%s "
+            "pnl_usd=%.2f peak_r=%s realized_r=%s capture=%s",
             decision_id,
             exit.coin,
             exit.exit_reason,
             exit.pnl_usd,
+            f"{peak_r:.4f}" if peak_r is not None else "None",
+            f"{realized_r:.4f}" if realized_r is not None else "None",
+            f"{capture_ratio:.4f}" if capture_ratio is not None else "None",
         )
 
     async def get_similar_decisions(

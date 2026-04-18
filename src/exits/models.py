@@ -59,3 +59,5 @@ class UniversalExit:
     stop_loss_price: float | None = None
     take_profit_price: float | None = None
     engine_id: str = "acevault"
+    peak_r_multiple: float | None = None
+    realized_r_multiple: float | None = None
