@@ -27,6 +27,8 @@ from src.nxfh01.orchestration.strategy_registry import StrategyRegistry
 from src.nxfh01.orchestration.track_a_executor import TrackAExecutor
 from src.market.btc_context_engine import BTCMarketContextEngine
 from src.market.btc_context_holder import BTCMarketContextHolder
+from src.market.cascade_forecaster import CascadeForecaster
+from src.market.cascade_risk import CascadeRiskHolder
 from src.market_data.hl_rate_limited_info import RateLimitedInfo
 from src.regime.detector import RegimeDetector
 from src.risk.engine_killswitch import KillSwitch
@@ -137,12 +139,18 @@ async def build_context(config: dict) -> dict:
     portfolio_state = PortfolioState()
     btc_context_holder = BTCMarketContextHolder()
     btc_context_engine = BTCMarketContextEngine(config)
+    cascade_risk_holder = CascadeRiskHolder()
     risk_layer = UnifiedRiskLayer(
         config, portfolio_state, kill_switch, btc_context_holder=btc_context_holder
     )
 
     hl_client = await init_hl_client(config)
     regime_detector = RegimeDetector(config, data_fetcher=None)
+
+    cascade_forecaster: CascadeForecaster | None = None
+    if (config.get("cascade_forecaster") or {}).get("enabled", False):
+        cascade_forecaster = CascadeForecaster(config, hl_client)
+        logger.info("MARKET_CASCADE_FORECASTER_INITIALIZED")
 
     journal = None
     database_url = os.getenv("DATABASE_URL")
@@ -250,6 +258,8 @@ async def build_context(config: dict) -> dict:
         btc_context_engine=btc_context_engine,
         btc_context_holder=btc_context_holder,
         decision_journal=journal,
+        cascade_forecaster=cascade_forecaster,
+        cascade_risk_holder=cascade_risk_holder,
     )
 
     tick_interval = float(
@@ -264,6 +274,8 @@ async def build_context(config: dict) -> dict:
         "risk_layer": risk_layer,
         "btc_context_engine": btc_context_engine,
         "btc_context_holder": btc_context_holder,
+        "cascade_forecaster": cascade_forecaster,
+        "cascade_risk_holder": cascade_risk_holder,
         "hl_client": hl_client,
         "regime_detector": regime_detector,
         "journal": journal,

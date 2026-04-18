@@ -42,6 +42,8 @@ class StrategyOrchestrator:
         btc_context_engine: Any | None = None,
         btc_context_holder: Any | None = None,
         decision_journal: Any | None = None,
+        cascade_forecaster: Any | None = None,
+        cascade_risk_holder: Any | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -54,6 +56,8 @@ class StrategyOrchestrator:
         self._btc_context_engine = btc_context_engine
         self._btc_context_holder = btc_context_holder
         self._decision_journal = decision_journal
+        self._cascade_forecaster = cascade_forecaster
+        self._cascade_risk_holder = cascade_risk_holder
 
         orch = config.get("orchestration") or {}
         self._execution_order: list[str] = list(
@@ -100,6 +104,14 @@ class StrategyOrchestrator:
             except Exception as e:
                 logger.warning("RISK_BTC_CONTEXT_FETCH_FAIL error=%s", e, exc_info=True)
                 self._btc_context_holder.set_context(None, tick_at=now)
+
+        if self._cascade_forecaster is not None and self._cascade_risk_holder is not None:
+            try:
+                cascade_snap = self._cascade_forecaster.assess(now)
+                self._cascade_risk_holder.set_risk(cascade_snap, tick_at=now)
+            except Exception as e:
+                logger.warning("MARKET_CASCADE_TICK_FAIL error=%s", e, exc_info=True)
+                self._cascade_risk_holder.set_risk(None, tick_at=now)
 
         if (
             self._portfolio_state is not None

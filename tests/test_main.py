@@ -163,6 +163,8 @@ class TestBuildContext:
             "risk_layer",
             "btc_context_engine",
             "btc_context_holder",
+            "cascade_forecaster",
+            "cascade_risk_holder",
             "hl_client",
             "regime_detector",
             "journal",

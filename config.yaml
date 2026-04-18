@@ -280,6 +280,30 @@ acp:
   offering_name: perp_trade
   sdk_url: ""
 
+cascade_forecaster:
+  enabled: true
+  # BTC book depth is the primary liquidity vacuum probe.
+  book_probe_coin: BTC
+  # Sub-signal weights (must sum to ~1.0).
+  weights:
+    oi_delta: 0.30
+    funding: 0.20
+    premium: 0.15
+    oi_cap: 0.10
+    book_thin: 0.25
+  # Normalization denominators — signal / norm → [0,1] before weighting.
+  normalization:
+    oi_delta_extreme_pct: 0.05
+    funding_extreme: 0.001
+    premium_extreme: 0.005
+    oi_cap_extreme_count: 10
+  # Score → level classification boundaries.
+  thresholds:
+    low: 0.15
+    elevated: 0.40
+    high: 0.65
+    critical: 0.85
+
 risk:
   # UnifiedRiskLayer is mandatory before any order reaches execution; no bypass flags.
   total_capital_usd: 10000
