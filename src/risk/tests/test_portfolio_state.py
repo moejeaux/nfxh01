@@ -22,6 +22,7 @@ class FakePosition:
 @dataclass
 class FakeExit:
     pnl_usd: float
+    exit_reason: str = "take_profit"
 
 
 def _long_position(pos_id: str, size: float = 100.0, coin: str = "DOGE") -> FakePosition:
@@ -221,3 +222,21 @@ class TestCorrelatedOverloaded:
             ps.register_position("a", _short_position(f"p{i}"))
         sig = FakeSignal(coin="X", side="long", position_size_usd=100)
         assert ps.is_correlated_overloaded(sig) is False
+
+
+class TestLastClosedExitForCoin:
+    def test_returns_most_recent_per_coin(self):
+        ps = PortfolioState()
+        p1 = _short_position("a", coin="S")
+        p2 = _short_position("b", coin="S")
+        ps.register_position("acevault", p1)
+        ps.close_position("acevault", "a", FakeExit(pnl_usd=-1.0, exit_reason="stop_loss"))
+        ps.register_position("acevault", p2)
+        ps.close_position("acevault", "b", FakeExit(pnl_usd=-2.0, exit_reason="stop_loss"))
+        rec = ps.get_last_closed_exit_for_engine_coin("acevault", "S")
+        assert rec is not None
+        assert rec["position"].position_id == "b"
+
+    def test_none_when_no_match(self):
+        ps = PortfolioState()
+        assert ps.get_last_closed_exit_for_engine_coin("acevault", "X") is None

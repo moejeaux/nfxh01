@@ -1,10 +1,14 @@
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
+import src.engines.acevault.entry as entry_mod
+import src.risk.portfolio_state as portfolio_state_mod
 from src.engines.acevault.entry import EntryManager
+from src.engines.acevault.exit import AceExit
 from src.engines.acevault.models import AceSignal, AcePosition, AltCandidate
 from src.regime.models import RegimeState, RegimeType
+from src.risk.portfolio_state import PortfolioState
 
 
 @pytest.fixture
@@ -26,6 +30,7 @@ def mock_config():
 def mock_portfolio_state():
     mock = Mock()
     mock.get_open_positions.return_value = []
+    mock.get_last_closed_exit_for_engine_coin.return_value = None
     return mock
 
 
@@ -304,3 +309,138 @@ def test_signal_timestamp_recent(entry_manager, sample_candidate, sample_regime)
     after_call = datetime.now(timezone.utc)
     
     assert before_call <= result.timestamp <= after_call
+
+
+def test_gate_reentry_cooldown_blocks_after_stop_loss(mock_config, sample_candidate, sample_regime, caplog):
+    mock_config["acevault"]["reentry_stop_loss_cooldown_seconds"] = 600
+    ps = PortfolioState()
+    sig = AceSignal(
+        coin="SOL",
+        side="short",
+        entry_price=100.0,
+        stop_loss_price=100.3,
+        take_profit_price=97.3,
+        position_size_usd=150,
+        weakness_score=0.5,
+        regime_at_entry="trending_down",
+        timestamp=datetime.now(timezone.utc),
+    )
+    pos = AcePosition(
+        position_id="closed-sol",
+        signal=sig,
+        opened_at=datetime.now(timezone.utc),
+        current_price=100.4,
+        unrealized_pnl_usd=-1.0,
+        status="open",
+    )
+    ps.register_position("acevault", pos)
+    ex = AceExit(
+        position_id="closed-sol",
+        coin="SOL",
+        exit_price=100.4,
+        exit_reason="stop_loss",
+        pnl_usd=-1.0,
+        pnl_pct=-0.01,
+        hold_duration_seconds=30,
+        entry_price=100.0,
+    )
+    ps.close_position("acevault", "closed-sol", ex)
+    em = EntryManager(mock_config, ps)
+    with caplog.at_level("INFO"):
+        result = em.should_enter(sample_candidate, sample_regime, 0.9)
+    assert result is None
+    assert "gate=reentry_cooldown" in caplog.text
+    assert "reason=recent_stop_loss" in caplog.text
+    assert "remaining_candles_est=" in caplog.text
+
+
+def test_gate_reentry_cooldown_allows_non_stop_exit(mock_config, sample_candidate, sample_regime, caplog):
+    mock_config["acevault"]["reentry_stop_loss_cooldown_seconds"] = 600
+    ps = PortfolioState()
+    sig = AceSignal(
+        coin="SOL",
+        side="short",
+        entry_price=100.0,
+        stop_loss_price=100.3,
+        take_profit_price=97.3,
+        position_size_usd=150,
+        weakness_score=0.5,
+        regime_at_entry="trending_down",
+        timestamp=datetime.now(timezone.utc),
+    )
+    pos = AcePosition(
+        position_id="closed-sol",
+        signal=sig,
+        opened_at=datetime.now(timezone.utc),
+        current_price=97.0,
+        unrealized_pnl_usd=3.0,
+        status="open",
+    )
+    ps.register_position("acevault", pos)
+    ex = AceExit(
+        position_id="closed-sol",
+        coin="SOL",
+        exit_price=97.0,
+        exit_reason="take_profit",
+        pnl_usd=3.0,
+        pnl_pct=0.03,
+        hold_duration_seconds=120,
+        entry_price=100.0,
+    )
+    ps.close_position("acevault", "closed-sol", ex)
+    em = EntryManager(mock_config, ps)
+    with caplog.at_level("INFO"):
+        result = em.should_enter(sample_candidate, sample_regime, 0.9)
+    assert result is not None
+
+
+def test_gate_reentry_allowed_after_cooldown_expires(
+    monkeypatch, mock_config, sample_candidate, sample_regime
+):
+    mock_config["acevault"]["reentry_stop_loss_cooldown_seconds"] = 60
+    t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    seq = iter([t0, t0 + timedelta(seconds=120)])
+
+    class _Dt:
+        @staticmethod
+        def now(tz=None):
+            return next(seq)
+
+    monkeypatch.setattr(portfolio_state_mod, "datetime", _Dt)
+    monkeypatch.setattr(entry_mod, "datetime", _Dt)
+
+    ps = PortfolioState()
+    sig = AceSignal(
+        coin="SOL",
+        side="short",
+        entry_price=100.0,
+        stop_loss_price=100.3,
+        take_profit_price=97.3,
+        position_size_usd=150,
+        weakness_score=0.5,
+        regime_at_entry="trending_down",
+        timestamp=datetime.now(timezone.utc),
+    )
+    pos = AcePosition(
+        position_id="closed-sol",
+        signal=sig,
+        opened_at=t0,
+        current_price=100.4,
+        unrealized_pnl_usd=-1.0,
+        status="open",
+    )
+    ps.register_position("acevault", pos)
+    ex = AceExit(
+        position_id="closed-sol",
+        coin="SOL",
+        exit_price=100.4,
+        exit_reason="stop_loss",
+        pnl_usd=-1.0,
+        pnl_pct=-0.01,
+        hold_duration_seconds=30,
+        entry_price=100.0,
+    )
+    ps.close_position("acevault", "closed-sol", ex)
+    em = EntryManager(mock_config, ps)
+    result = em.should_enter(sample_candidate, sample_regime, 0.9)
+    assert result is not None

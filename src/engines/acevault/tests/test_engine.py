@@ -48,6 +48,7 @@ def mock_regime_detector():
 def mock_risk_layer():
     risk_layer = Mock()
     risk_layer.portfolio_state = Mock()
+    risk_layer.get_safety_position_multiplier.return_value = 1.0
     risk_decision = Mock()
     risk_decision.approved = True
     risk_decision.reason = "approved"
@@ -195,7 +196,8 @@ async def test_cycle_skips_risk_rejected_signal(engine, mock_risk_layer, sample_
 
 
 @pytest.mark.asyncio
-async def test_cycle_submits_approved_signal(engine, sample_signal):
+async def test_cycle_submits_approved_signal(engine, sample_signal, caplog):
+    caplog.set_level("INFO")
     entry_mock = Mock()
     entry_mock.should_enter.return_value = sample_signal
     engine._entry_manager = entry_mock
@@ -227,6 +229,8 @@ async def test_cycle_submits_approved_signal(engine, sample_signal):
     assert req.coin == sample_signal.coin
     assert len(result) == 1
     assert isinstance(result[0], AceSignal)
+    assert "ACEVAULT_SIZE_COMPOSITION coin=DOGE" in caplog.text
+    assert "fathom_source=deterministic" in caplog.text
 
 
 @pytest.mark.asyncio

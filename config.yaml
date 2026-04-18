@@ -112,6 +112,11 @@ acevault:
     trending_down: 0.9
     ranging: 0.6
     risk_off: 1.0
+  # Same-coin re-entry after AceVault stop_loss: block for cooldown window (acevault engine only).
+  # Precedence: if reentry_stop_loss_cooldown_seconds is a number, it wins; else candles × interval (default 10×60s=600s).
+  reentry_stop_loss_cooldown_candles: 10
+  reentry_stop_loss_candle_interval_seconds: 60
+  reentry_stop_loss_cooldown_seconds: null
 
 growi_hf:
   default_position_size_usd: 20
@@ -159,8 +164,9 @@ fathom:
   entry_timeout_seconds: 15
   retro_timeout_seconds: 600
   timeout_seconds: 30
-  # Reduced ~15% vs prior caps per Fathom retrospective advisory.
-  acevault_max_mult: 1.28
+  # Advisory size factor for AceVault entries (applied after safety mode). Bounds must match prompts/parser.
+  acevault_min_mult: 0.90
+  acevault_max_mult: 1.15
   majors_max_mult: 1.68
 
 # Unified retrospective service (shallow + deep); single scheduler, lock, registry pipeline.

@@ -165,7 +165,7 @@ class AceVaultEngine:
             return results
 
         # --- pre-build signals and run Fathom concurrently for all candidates ---
-        valid_signals = []
+        valid_signals: list[tuple[AceSignal, float]] = []
         for candidate in candidates:
             signal = self._entry_manager.should_enter(candidate, regime_state, weight)
             if signal is None:
@@ -187,6 +187,7 @@ class AceVaultEngine:
                 signal.annualized_carry,
                 signal.funding_trend,
             )
+            base_usd = float(signal.position_size_usd)
             risk_decision = self.risk_layer.validate(signal, "acevault")
             if not risk_decision.approved:
                 logger.info(
@@ -195,7 +196,7 @@ class AceVaultEngine:
                     risk_decision.reason,
                 )
                 continue
-            valid_signals.append(signal)
+            valid_signals.append((signal, base_usd))
 
         # Fetch all prior contexts concurrently
         if self._fathom_advisor is not None and valid_signals:
@@ -222,29 +223,47 @@ class AceVaultEngine:
                     )
                 except Exception as e:
                     logger.warning("FATHOM_ADVISORY_FAILED coin=%s error=%s", signal.coin, e)
-                    return {"size_mult": 1.0, "reasoning": "fathom_error", "source": "deterministic"}
+                    return {
+                        "size_mult": 1.0,
+                        "size_mult_raw": 1.0,
+                        "reasoning": "fathom_error",
+                        "source": "deterministic",
+                    }
 
             import asyncio as _asyncio
-            fathom_results = await _asyncio.gather(*[_get_advice(s) for s in valid_signals])
-            fathom_map = {s.coin: r for s, r in zip(valid_signals, fathom_results)}
+            fathom_results = await _asyncio.gather(
+                *[_get_advice(s) for s, _ in valid_signals]
+            )
+            fathom_map = {s.coin: r for (s, _), r in zip(valid_signals, fathom_results)}
         else:
             fathom_map = {}
 
-        for signal in valid_signals:
+        safety_mult = float(self.risk_layer.get_safety_position_multiplier())
+
+        for signal, base_usd in valid_signals:
             fathom_result = fathom_map.get(signal.coin, {
                 "size_mult": 1.0,
+                "size_mult_raw": 1.0,
                 "reasoning": "fathom_disabled",
                 "source": "deterministic",
             })
 
-            # Apply Fathom size multiplier
-            signal.position_size_usd = signal.position_size_usd * fathom_result["size_mult"]
+            # Apply Fathom size multiplier (after safety sizing inside validate)
+            fathom_applied = float(fathom_result["size_mult"])
+            fathom_raw = float(fathom_result.get("size_mult_raw", fathom_applied))
+            signal.position_size_usd = signal.position_size_usd * fathom_applied
+            final_usd = float(signal.position_size_usd)
             logger.info(
-                "FATHOM_SIZE_APPLIED coin=%s mult=%.2f source=%s reasoning=%s",
+                "ACEVAULT_SIZE_COMPOSITION coin=%s base_usd=%.2f safety_mult=%.4f "
+                "fathom_mult_raw=%.4f fathom_mult_applied=%.4f final_usd=%.2f "
+                "fathom_source=%s cooldown_block=false",
                 signal.coin,
-                fathom_result["size_mult"],
-                fathom_result["source"],
-                fathom_result.get("reasoning", ""),
+                base_usd,
+                safety_mult,
+                fathom_raw,
+                fathom_applied,
+                final_usd,
+                fathom_result.get("source", ""),
             )
 
             # --- submit to DegenClaw ---

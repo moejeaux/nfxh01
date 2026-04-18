@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime, timezone
+import math
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.engines.acevault.models import AceSignal, AltCandidate
@@ -22,6 +23,7 @@ class EntryManager:
             ("liquidity_gate", self._check_liquidity_gate, (candidate,)),
             ("regime_gate", self._check_regime_gate, (regime.regime, regime_weight)),
             ("duplicate_gate", self._check_duplicate_gate, (candidate.coin,)),
+            ("reentry_cooldown_gate", self._check_reentry_cooldown_gate, (candidate.coin,)),
             ("capacity_gate", self._check_capacity_gate, ()),
         ]
 
@@ -90,6 +92,60 @@ class EntryManager:
                 )
                 return False
         return True
+
+    def _stop_loss_reentry_cooldown_seconds(self) -> float:
+        """Effective cooldown in seconds: explicit ``reentry_stop_loss_cooldown_seconds`` if set, else candles×interval."""
+        av = self._acevault_cfg
+        explicit = av.get("reentry_stop_loss_cooldown_seconds")
+        if explicit is not None:
+            return max(0.0, float(explicit))
+        candles = av.get("reentry_stop_loss_cooldown_candles")
+        if candles is None:
+            return 0.0
+        per = float(av.get("reentry_stop_loss_candle_interval_seconds", 60))
+        return max(0.0, float(candles) * per)
+
+    def _reentry_candle_interval_seconds(self) -> float:
+        return float(self._acevault_cfg.get("reentry_stop_loss_candle_interval_seconds", 60))
+
+    def _check_reentry_cooldown_gate(self, coin: str) -> bool:
+        cool = self._stop_loss_reentry_cooldown_seconds()
+        if cool <= 0.0:
+            return True
+        if self._portfolio_state is None:
+            return True
+        getter = getattr(self._portfolio_state, "get_last_closed_exit_for_engine_coin", None)
+        if not callable(getter):
+            return True
+        rec = getter("acevault", coin)
+        if rec is None:
+            return True
+        exit_obj = rec.get("exit")
+        reason = getattr(exit_obj, "exit_reason", None) if exit_obj is not None else None
+        if reason != "stop_loss":
+            return True
+        closed_at = rec.get("closed_at")
+        if not isinstance(closed_at, datetime):
+            return True
+        now = datetime.now(timezone.utc)
+        elapsed = (now - closed_at).total_seconds()
+        if elapsed >= cool:
+            return True
+        remaining = cool - elapsed
+        expires_at = closed_at + timedelta(seconds=cool)
+        per = self._reentry_candle_interval_seconds()
+        rem_candles = (
+            max(0, int(math.ceil(remaining / per))) if per > 0 else 0.0
+        )
+        logger.info(
+            "ACEVAULT_ENTRY_REJECTED coin=%s gate=reentry_cooldown reason=recent_stop_loss "
+            "remaining_seconds=%.0f remaining_candles_est=%s cooldown_expires_at=%s",
+            coin,
+            remaining,
+            rem_candles,
+            expires_at.isoformat(),
+        )
+        return False
 
     def _check_capacity_gate(self) -> bool:
         max_positions = self._acevault_cfg["max_concurrent_positions"]

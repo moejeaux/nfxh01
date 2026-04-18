@@ -19,15 +19,36 @@ class FathomAdvisor:
                 self._fathom_cfg.get('timeout_seconds', 30),
             )
         )
-        self._max_mult = self._fathom_cfg.get('acevault_max_mult', 1.5)
+        self._min_mult = float(self._fathom_cfg.get('acevault_min_mult', 0.90))
+        self._max_mult = float(self._fathom_cfg.get('acevault_max_mult', 1.15))
         self._fast_model = self._fathom_cfg.get('fast_model', 'llama3.2:3b')
+
+    def _clamp_acevault_mult(self, raw: float, signal: AceSignal) -> tuple[float, float]:
+        """Return (applied, raw) with ``applied`` in [min, max]. Logs when clamped."""
+        try:
+            x = float(raw)
+        except (TypeError, ValueError):
+            return self._min_mult, raw
+        applied = max(self._min_mult, min(x, self._max_mult))
+        if applied != x:
+            logger.info(
+                'FATHOM_MULT_CLAMPED coin=%s raw=%.4f applied=%.4f min=%.4f max=%.4f',
+                signal.coin, x, applied, self._min_mult, self._max_mult,
+            )
+        return applied, x
 
     async def advise_acevault(self, signal, regime_state, prior_context):
         prompt = self._build_acevault_prompt(signal, regime_state, prior_context)
         raw = await self._call_fathom(prompt)
         advice = self._parse_response(raw, signal) if raw is not None else self._deterministic_default(signal)
-        logger.info('FATHOM_ACEVAULT_ADVICE coin=%s mult=%s source=%s reasoning=%s',
-                    signal.coin, advice['size_mult'], advice['source'], advice['reasoning'][:80])
+        logger.info(
+            'FATHOM_ACEVAULT_ADVICE coin=%s mult_applied=%s mult_raw=%s source=%s reasoning=%s',
+            signal.coin,
+            advice['size_mult'],
+            advice.get('size_mult_raw', advice['size_mult']),
+            advice['source'],
+            advice['reasoning'][:80],
+        )
         return advice
 
     def _build_acevault_prompt(self, signal, regime_state, prior_context):
@@ -40,17 +61,23 @@ class FathomAdvisor:
             f'size_usd={signal.position_size_usd} weakness={signal.weakness_score:.3f}\n'
             f'PRIOR_DECISIONS: {prior_str}\n\n'
             'Based on the above, output your size recommendation.\n'
-            'End with: MULTIPLIER: X.X'
+            f'End with: MULTIPLIER: X.X (advisory size factor between {self._min_mult:.2f} and {self._max_mult:.2f})'
         )
 
     async def _call_fathom(self, prompt):
         url = f'{self._ollama_base_url}/api/chat'
+        lo, hi = self._min_mult, self._max_mult
         payload = {
             'model': self._fast_model,
             'stream': False,
             'options': {'num_predict': 60, 'temperature': 0.0},
             'messages': [
-                {'role': 'system', 'content': 'Reply in this exact format only:\nMULTIPLIER: X.X\nREASON: one sentence.\nX.X is 1.0 to 1.5. No other text.'},
+                {'role': 'system', 'content': (
+                    'Reply in this exact format only:\n'
+                    'MULTIPLIER: X.X\n'
+                    'REASON: one sentence.\n'
+                    f'X.X must be between {lo:.2f} and {hi:.2f}. No other text.'
+                )},
                 {'role': 'user', 'content': prompt},
             ],
         }
@@ -69,31 +96,55 @@ class FathomAdvisor:
             logger.warning('FATHOM_UNEXPECTED_ERROR reason=%s', exc)
         return None
 
+    def _extract_reason_text(self, response: str) -> str | None:
+        m = re.search(r'REASON:\s*(.+?)(?:\n|$)', response, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            return m.group(1).strip()[:200]
+        return None
+
     def _parse_response(self, response, signal):
-        clean = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
+        clean = re.sub(r'<redacted_thinking>.*?</redacted_thinking>', '', response, flags=re.DOTALL).strip()
         search_in = clean if clean else response
         match = re.search(r'MULTIPLIER:\s*([\d.]+)', search_in, re.IGNORECASE)
         if not match:
             match = re.search(r'MULTIPLIER:\s*([\d.]+)', response, re.IGNORECASE)
         if not match:
-            tail_matches = re.findall(r'\b(1\.[0-5]\d*)\b', response[-400:])
+            tail_matches = re.findall(
+                r'\b(\d+\.\d+|\d+)\b',
+                response[-400:],
+            )
             if tail_matches:
                 try:
-                    mult = max(1.0, min(float(tail_matches[-1]), self._max_mult))
-                    logger.info('FATHOM_FALLBACK_MULT coin=%s mult=%s', signal.coin, mult)
-                    return {'size_mult': mult, 'reasoning': 'fathom_fallback_parse', 'source': 'fathom'}
+                    raw_val = float(tail_matches[-1])
+                    mult, raw_tracked = self._clamp_acevault_mult(raw_val, signal)
+                    logger.info('FATHOM_FALLBACK_MULT coin=%s mult_raw=%s mult_applied=%s', signal.coin, raw_tracked, mult)
+                    reason = self._extract_reason_text(response) or 'fathom_fallback_parse'
+                    return {
+                        'size_mult': mult,
+                        'size_mult_raw': raw_tracked,
+                        'reasoning': reason,
+                        'source': 'fathom',
+                    }
                 except ValueError:
                     pass
             logger.warning('FATHOM_PARSE_FAILED tail=%s', response[-150:])
             return self._deterministic_default(signal)
         try:
-            mult = max(1.0, min(float(match.group(1)), self._max_mult))
+            raw_val = float(match.group(1))
         except ValueError:
             return self._deterministic_default(signal)
-        pos = response.rfind(match.group(0))
-        after = response[pos + len(match.group(0)):].strip()
-        return {'size_mult': mult, 'reasoning': (after[:200] if after else 'no_reasoning_provided'), 'source': 'fathom'}
-
+        mult, raw_tracked = self._clamp_acevault_mult(raw_val, signal)
+        reason = self._extract_reason_text(response)
+        if not reason:
+            pos = response.rfind(match.group(0))
+            after = response[pos + len(match.group(0)):].strip()
+            reason = (after[:200] if after else 'no_reasoning_provided')
+        return {
+            'size_mult': mult,
+            'size_mult_raw': raw_tracked,
+            'reasoning': reason,
+            'source': 'fathom',
+        }
 
     async def analyse_trade(self, decision: dict, journal) -> None:
         """Post-trade deep analysis using fathom-r1-14b. Runs async, never blocks entries."""
@@ -139,4 +190,9 @@ class FathomAdvisor:
                            coin, decision_id, exc)
 
     def _deterministic_default(self, signal):
-        return {'size_mult': 1.0, 'reasoning': 'fathom_unavailable', 'source': 'deterministic'}
+        return {
+            'size_mult': 1.0,
+            'size_mult_raw': 1.0,
+            'reasoning': 'fathom_unavailable',
+            'source': 'deterministic',
+        }

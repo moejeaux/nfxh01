@@ -77,6 +77,28 @@ class PortfolioState:
             all_positions.extend(positions.values())
         return all_positions
 
+    def get_last_closed_exit_for_engine_coin(self, engine_id: str, coin: str) -> dict | None:
+        """Most recent closed record for ``engine_id`` and perp ``coin`` (by ``closed_at``)."""
+        want = (coin or "").strip().upper()
+        best: dict | None = None
+        best_ts: datetime | None = None
+        for rec in self._closed_positions:
+            if rec.get("engine_id") != engine_id:
+                continue
+            pos = rec.get("position")
+            c = getattr(getattr(pos, "signal", None), "coin", None)
+            if c is None:
+                c = getattr(pos, "coin", None)
+            if str(c).strip().upper() != want:
+                continue
+            ts = rec.get("closed_at")
+            if not isinstance(ts, datetime):
+                continue
+            if best_ts is None or ts > best_ts:
+                best_ts = ts
+                best = rec
+        return best
+
     def get_gross_exposure(self) -> float:
         total = 0.0
         for positions in self._positions.values():

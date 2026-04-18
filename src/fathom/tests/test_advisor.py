@@ -16,7 +16,8 @@ def mock_config():
             "model": "llama3.2:3b",
             "fast_model": "llama3.2:3b",
             "timeout_seconds": 15,
-            "acevault_max_mult": 1.5,
+            "acevault_min_mult": 0.90,
+            "acevault_max_mult": 1.15,
         }
     }
 
@@ -60,6 +61,7 @@ async def test_returns_deterministic_on_timeout(advisor, sample_signal, sample_r
 
     assert result["source"] == "deterministic"
     assert result["size_mult"] == 1.0
+    assert result["size_mult_raw"] == 1.0
     assert result["reasoning"] == "fathom_unavailable"
 
 
@@ -72,40 +74,56 @@ async def test_returns_deterministic_on_connection_error(advisor, sample_signal,
 
     assert result["source"] == "deterministic"
     assert result["size_mult"] == 1.0
+    assert result["size_mult_raw"] == 1.0
     assert result["reasoning"] == "fathom_unavailable"
 
 
 @pytest.mark.asyncio
 async def test_parses_multiplier_correctly(advisor, sample_signal, sample_regime_state):
-    advisor._call_fathom = AsyncMock(return_value="MULTIPLIER: 1.3 Strong trend")
+    advisor._call_fathom = AsyncMock(return_value="MULTIPLIER: 1.10 Strong trend")
 
     result = await advisor.advise_acevault(sample_signal, sample_regime_state, "prior context")
 
     assert result["source"] == "fathom"
-    assert result["size_mult"] == 1.3
+    assert result["size_mult"] == 1.1
+    assert result["size_mult_raw"] == 1.1
     assert result["reasoning"] == "Strong trend"
 
 
 @pytest.mark.asyncio
-async def test_clamps_multiplier_above_1_5(advisor, sample_signal, sample_regime_state):
+async def test_clamps_multiplier_above_config_max(advisor, sample_signal, sample_regime_state):
     advisor._call_fathom = AsyncMock(return_value="MULTIPLIER: 2.0")
 
     result = await advisor.advise_acevault(sample_signal, sample_regime_state, "prior context")
 
     assert result["source"] == "fathom"
-    assert result["size_mult"] == 1.5
+    assert result["size_mult"] == 1.15
+    assert result["size_mult_raw"] == 2.0
     assert result["reasoning"] == "no_reasoning_provided"
 
 
 @pytest.mark.asyncio
-async def test_clamps_multiplier_below_1_0(advisor, sample_signal, sample_regime_state):
-    advisor._call_fathom = AsyncMock(return_value="MULTIPLIER: 0.5")
+async def test_clamps_multiplier_below_config_min(advisor, sample_signal, sample_regime_state):
+    advisor._call_fathom = AsyncMock(return_value="MULTIPLIER: 0.5\nREASON: test.")
 
     result = await advisor.advise_acevault(sample_signal, sample_regime_state, "prior context")
 
     assert result["source"] == "fathom"
-    assert result["size_mult"] == 1.0
-    assert result["reasoning"] == "no_reasoning_provided"
+    assert result["size_mult"] == 0.90
+    assert result["size_mult_raw"] == 0.5
+    assert result["reasoning"] == "test."
+
+
+@pytest.mark.asyncio
+async def test_preserves_multiplier_between_min_and_max(advisor, sample_signal, sample_regime_state):
+    advisor._call_fathom = AsyncMock(return_value="MULTIPLIER: 0.92\nREASON: cautious.")
+
+    result = await advisor.advise_acevault(sample_signal, sample_regime_state, "prior context")
+
+    assert result["source"] == "fathom"
+    assert result["size_mult"] == 0.92
+    assert result["size_mult_raw"] == 0.92
+    assert result["reasoning"] == "cautious."
 
 
 @pytest.mark.asyncio
@@ -116,6 +134,7 @@ async def test_parse_failure_returns_default(advisor, sample_signal, sample_regi
 
     assert result["source"] == "deterministic"
     assert result["size_mult"] == 1.0
+    assert result["size_mult_raw"] == 1.0
     assert result["reasoning"] == "fathom_unavailable"
 
 
