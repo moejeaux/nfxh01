@@ -200,6 +200,11 @@ retro:
   # executor surfaces realized fill fees. Set to null to disable the estimate.
   fee_estimation:
     taker_bps_per_side: 3.5
+  # Phase 2b: Worst-PF (profit factor) candidates for auto-disable advisor signal.
+  # worst_pf_candidate_min_trades: only coins with >= N closed trades considered.
+  # worst_pf_limit: top N worst-PF coins surfaced to advisor in prompt.
+  worst_pf_candidate_min_trades: 10
+  worst_pf_limit: 8
   telegram_notify: false
   telegram_message_max_chars: 3500
 

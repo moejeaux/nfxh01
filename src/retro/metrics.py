@@ -57,6 +57,49 @@ def consecutive_loss_streak(closed: list[dict[str, Any]]) -> int:
     return best
 
 
+def profit_factor_by_regime(closed: list[dict[str, Any]]) -> dict[str, float]:
+    """Aggregate profit factor keyed by regime_at_close.
+
+    Returns dict like {"TRENDING_UP": 1.5, "RANGING": 0.9, ...}.
+    Regimes with zero closed trades are excluded.
+    """
+    by_regime: dict[str, list[float]] = {}
+    for r in closed:
+        regime = str(r.get("regime_at_close") or "unknown").strip()
+        pnl = float(r.get("pnl_usd") or 0.0)
+        if regime not in by_regime:
+            by_regime[regime] = []
+        by_regime[regime].append(pnl)
+    return {regime: _profit_factor(pnls) for regime, pnls in by_regime.items()}
+
+
+def profit_factor_by_coin(
+    closed: list[dict[str, Any]], min_trades: int = 1
+) -> list[dict[str, Any]]:
+    """Rank coins by PF; include only coins with >= min_trades.
+
+    Returns list of dicts like [{"coin": "BTC", "trades": 5, "pf": 1.2, "pnl_usd": 50.0}, ...],
+    sorted worst-PF first (ascending). Coins below min_trades floor are excluded.
+    """
+    by_coin: dict[str, list[float]] = {}
+    for r in closed:
+        coin = str(r.get("coin") or "?").strip()
+        pnl = float(r.get("pnl_usd") or 0.0)
+        if coin not in by_coin:
+            by_coin[coin] = []
+        by_coin[coin].append(pnl)
+
+    result = []
+    for coin, pnls in by_coin.items():
+        if len(pnls) < min_trades:
+            continue
+        pf = _profit_factor(pnls)
+        total_pnl = sum(pnls)
+        result.append({"coin": coin, "trades": len(pnls), "pf": pf, "pnl_usd": total_pnl})
+
+    return sorted(result, key=lambda x: x["pf"])
+
+
 def worst_coins_by_pnl(closed: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
     by: dict[str, float] = {}
     for r in closed:
@@ -64,6 +107,18 @@ def worst_coins_by_pnl(closed: list[dict[str, Any]], limit: int = 8) -> list[dic
         by[c] = by.get(c, 0.0) + float(r["pnl_usd"])
     ranked = sorted(by.items(), key=lambda x: x[1])
     return [{"coin": k, "pnl_usd": v} for k, v in ranked[:limit]]
+
+
+def worst_coins_by_pf(
+    closed: list[dict[str, Any]], min_trades: int = 1, limit: int = 8
+) -> list[dict[str, Any]]:
+    """Rank coins by worst PF; include only coins with >= min_trades.
+
+    Returns up to `limit` dicts like [{"coin": "DOGE", "pf": 0.5, "trades": 3}, ...],
+    ordered worst-PF first. Complements worst_coins_by_pnl with a profitability lens.
+    """
+    by_coin = profit_factor_by_coin(closed, min_trades=min_trades)
+    return [{"coin": x["coin"], "pf": x["pf"], "trades": x["trades"]} for x in by_coin[:limit]]
 
 
 def _median(values: list[float]) -> float | None:
@@ -211,6 +266,11 @@ def build_extended_performance_snapshot(
         digest = build_decisions_digest(rows)
 
     peak_r = peak_r_capture_stats(closed)
+
+    retro_cfg = (config or {}).get("retro") or {}
+    worst_pf_min_trades = int(retro_cfg.get("worst_pf_candidate_min_trades", 10))
+    worst_pf_limit = int(retro_cfg.get("worst_pf_limit", 8))
+
     ext = {
         "closing_trade_count": snap.closing_trade_count,
         "global_profit_factor": snap.global_profit_factor
@@ -222,6 +282,10 @@ def build_extended_performance_snapshot(
         "loss_count": snap.loss_count,
         "consecutive_loss_streak": consecutive_loss_streak(closed),
         "worst_coins": worst_coins_by_pnl(closed),
+        "worst_coins_by_pf": worst_coins_by_pf(
+            closed, min_trades=worst_pf_min_trades, limit=worst_pf_limit
+        ),
+        "profit_factor_by_regime": profit_factor_by_regime(closed),
         "digest": digest,
         "peak_r_capture_ratio": peak_r["mean_peak_r_capture_ratio"],
         "peak_r_capture_stats": peak_r,
