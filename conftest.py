@@ -1,3 +1,15 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# Ensure `from src....` imports work in every environment (pytest.ini pythonpath can be ignored or
+# behave differently across pytest / Python versions).
+_root = Path(__file__).resolve().parent
+_rp = str(_root)
+if _rp not in sys.path:
+    sys.path.insert(0, _rp)
+
 import pytest
 import pandas as pd
 from unittest.mock import Mock
