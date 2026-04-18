@@ -7,6 +7,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from src.db.decision_journal import DecisionJournal
 from src.fathom.retrospective import (
@@ -15,6 +16,19 @@ from src.fathom.retrospective import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _db_url_host_for_log(db_url: str) -> str:
+    """Return host:port for logs only (no userinfo)."""
+    try:
+        u = urlparse(db_url)
+        host = u.hostname or ""
+        port = u.port
+        if port:
+            return f"{host}:{port}"
+        return host or "unknown"
+    except Exception:
+        return "invalid_url"
 
 
 async def _wait_retro_shutdown(
@@ -83,7 +97,11 @@ async def run_unified_retrospective_loop(
                             if isinstance(ca, datetime):
                                 last_at = ca
                     except Exception as e:
-                        logger.warning("RETRO_EMBED_LAST_RUN_QUERY_FAILED error=%s", e)
+                        logger.warning(
+                            "RETRO_EMBED_JOURNAL_QUERY_FAILED host=%s error=%s",
+                            _db_url_host_for_log(db_url),
+                            e,
+                        )
                 else:
                     j = DecisionJournal(db_url)
                     try:
@@ -94,7 +112,11 @@ async def run_unified_retrospective_loop(
                             if isinstance(ca, datetime):
                                 last_at = ca
                     except Exception as e:
-                        logger.warning("RETRO_EMBED_LAST_RUN_QUERY_FAILED error=%s", e)
+                        logger.warning(
+                            "RETRO_EMBED_JOURNAL_QUERY_FAILED host=%s error=%s",
+                            _db_url_host_for_log(db_url),
+                            e,
+                        )
                     finally:
                         await j.close()
 
@@ -225,7 +247,11 @@ async def _legacy_six_hour_embedded_loop(
                             if isinstance(ca, datetime):
                                 last_at = ca
                     except Exception as e:
-                        logger.warning("RETRO_EMBED_LAST_RUN_QUERY_FAILED error=%s", e)
+                        logger.warning(
+                            "RETRO_EMBED_JOURNAL_QUERY_FAILED host=%s error=%s",
+                            _db_url_host_for_log(db_url),
+                            e,
+                        )
                 else:
                     j = DecisionJournal(db_url)
                     try:
@@ -236,7 +262,11 @@ async def _legacy_six_hour_embedded_loop(
                             if isinstance(ca, datetime):
                                 last_at = ca
                     except Exception as e:
-                        logger.warning("RETRO_EMBED_LAST_RUN_QUERY_FAILED error=%s", e)
+                        logger.warning(
+                            "RETRO_EMBED_JOURNAL_QUERY_FAILED host=%s error=%s",
+                            _db_url_host_for_log(db_url),
+                            e,
+                        )
                     finally:
                         await j.close()
 

@@ -117,15 +117,50 @@ def parse_advisor_json(raw: str) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _schema_repair_suffix(errs: list[str]) -> str:
+def _minimal_advisor_example_json(schema_version: int) -> str:
+    ex = {
+        "schema_version": int(schema_version),
+        "diagnosis": "example_only_delete_and_replace",
+        "low_risk_actions": [
+            {"action": "no_action", "target": "", "value": None},
+        ],
+        "high_risk_suggestions": [],
+        "confidence": 0.5,
+        "evaluation_horizon": "25 trades",
+        "rollback_criteria": "none",
+    }
+    return json.dumps(ex, ensure_ascii=False)
+
+
+def _schema_repair_suffix(errs: list[str], schema_version: int) -> str:
     keys = ", ".join(REQUIRED_TOP_LEVEL)
     err_s = "; ".join(errs[:20])
+    ex = _minimal_advisor_example_json(schema_version)
     return (
         f"\n\nPrevious output failed validation: {err_s}. "
         f"Reply with ONE JSON object only (no markdown). "
         f"Required top-level keys: {keys}. "
-        f'Use "low_risk_actions": [{{"action":"no_action","target":"","value":null}}] if no change.'
+        f"Minimal valid shape example (use schema_version={int(schema_version)} exactly): {ex}"
     )
+
+
+def validated_advisor_fallback_dict(schema_version: int) -> dict[str, Any]:
+    """Deterministic JSON when the model will not emit a valid advisor object."""
+    obj: dict[str, Any] = {
+        "schema_version": int(schema_version),
+        "diagnosis": "advisor_model_output_invalid_fallback",
+        "low_risk_actions": [
+            {"action": "no_action", "target": "", "value": None},
+        ],
+        "high_risk_suggestions": [],
+        "confidence": 0.0,
+        "evaluation_horizon": "n/a",
+        "rollback_criteria": "n/a",
+    }
+    ok, errs = validate_advisor_response(obj)
+    if not ok:
+        logger.error("RETRO_ADVISOR_FALLBACK_BROKEN errs=%s", errs)
+    return obj
 
 
 async def call_with_retry(
@@ -140,6 +175,9 @@ async def call_with_retry(
 ) -> tuple[str, dict[str, Any] | None]:
     """Return (raw_text, parsed_dict or None). Ollama JSON format + parse + schema repair."""
     np_r = min(int(num_predict), 8192)
+    retro_cfg = config.get("retro") or {}
+    adv_sv = int(retro_cfg.get("advisor_schema_version", 1))
+    repair_temp = float(retro_cfg.get("advisor_retry_temperature", 0.0))
 
     async def o(msg: str, temp: float, npp: int) -> str:
         return await call_retro_ollama(
@@ -159,7 +197,11 @@ async def call_with_retry(
         if ok:
             return r1, p1
         logger.warning("RETRO_ADVISOR_SCHEMA_RETRY errs=%s", errs[:10])
-        r_a = await o(user_prompt + _schema_repair_suffix(errs), 0.0, np_r)
+        r_a = await o(
+            user_prompt + _schema_repair_suffix(errs, adv_sv),
+            repair_temp,
+            np_r,
+        )
         p_a = parse_advisor_json(r_a)
         if p_a and validate_advisor_response(p_a)[0]:
             return r_a, p_a
@@ -168,7 +210,7 @@ async def call_with_retry(
     r2 = await o(
         user_prompt
         + "\n\nOutput a single JSON object only. No markdown fences or commentary.",
-        0.0,
+        repair_temp,
         np_r,
     )
     p2 = parse_advisor_json(r2)
@@ -177,11 +219,19 @@ async def call_with_retry(
         if ok2:
             return r2, p2
         logger.warning("RETRO_ADVISOR_SECOND_SCHEMA_RETRY errs=%s", errs2[:10])
-        r_b = await o(user_prompt + _schema_repair_suffix(errs2), 0.0, np_r)
+        r_b = await o(
+            user_prompt + _schema_repair_suffix(errs2, adv_sv),
+            repair_temp,
+            np_r,
+        )
         p_b = parse_advisor_json(r_b)
         if p_b and validate_advisor_response(p_b)[0]:
             return r_b, p_b
-        if p_b:
-            return r_b, p_b
-        return r2, p2
-    return r2, None
+
+    fb = validated_advisor_fallback_dict(adv_sv)
+    raw_fb = json.dumps(fb, ensure_ascii=False)
+    logger.warning(
+        "RETRO_ADVISOR_FALLBACK reason=all_retries_invalid schema_version=%s",
+        adv_sv,
+    )
+    return raw_fb, fb

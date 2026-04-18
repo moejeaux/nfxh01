@@ -78,6 +78,30 @@ normalization:
 
 Lower = more sensitive. Raise = less sensitive.
 
+### Premium cap and aggregation
+
+Pathological mark/oracle rows (stale oracle, illiquid names) are capped per asset before aggregation so a single row cannot dominate the score.
+
+```yaml
+normalization:
+  premium_per_asset_cap: 0.05       # Max fractional premium per coin before aggregate
+  premium_aggregation: p95          # p95 | max | mean_top_n
+  premium_mean_top_n: 10            # Used when premium_aggregation is mean_top_n
+```
+
+Outliers beyond the cap log once per row at INFO: `MARKET_CASCADE_PREMIUM_OUTLIER`.
+
+## Orchestrator tick duration (performance)
+
+End-to-end tick time is dominated by **AceVault’s per-coin evaluation** (Hyperliquid calls across many symbols), not by the cascade forecaster alone.
+
+- Tune **`acevault.max_coins_to_evaluate`** in `config.yaml` to reduce scanner work and shorten ticks (trade-off: fewer coins considered per cycle).
+- If you see HTTP 429s from Hyperliquid, you may raise **`hyperliquid_api.min_interval_ms`** at the cost of slower refreshes.
+
+### Fathom entry advisor timeout (15s)
+
+Entry and advisory Fathom calls are capped at **15 seconds** by product rules. `FATHOM_TIMEOUT` in logs under load is expected; mitigation is operational: fewer concurrent Ollama jobs, more headroom on the host, or a faster model configured under `fathom` / `fathom.fast_model` where architecture allows—not a longer client timeout unless that policy is explicitly changed.
+
 ## Monitoring
 
 ### Decision Journal Integration
@@ -139,5 +163,6 @@ See:
 - `PHASE_3_ROADMAP.md` — Strategic overview
 - `src/market/cascade_forecaster.py` — Implementation details
 - `tests/test_cascade_forecaster.py` — Test cases (show expected behavior)
+- `docs/DATABASE_RETRO_EMBED.md` — `DATABASE_URL` / Supabase checks when embedded retrospective queries fail
 
 ---

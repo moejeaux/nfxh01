@@ -36,6 +36,9 @@ def _base_config(*, enabled: bool = True) -> dict:
                 "oi_delta_extreme_pct": 0.05,
                 "funding_extreme": 0.001,
                 "premium_extreme": 0.005,
+                "premium_per_asset_cap": 0.05,
+                "premium_aggregation": "p95",
+                "premium_mean_top_n": 10,
                 "oi_cap_extreme_count": 10,
             },
             "thresholds": {
@@ -48,15 +51,15 @@ def _base_config(*, enabled: bool = True) -> dict:
     }
 
 
-def _make_asset_ctx(
-    coin: str,
+def _asset_ctx(
+    *,
     oi: float = 1_000_000.0,
     funding: float = 0.0001,
     mark_px: float = 100.0,
     oracle_px: float = 100.0,
 ) -> dict:
+    """HL asset ctx row (no ``coin``; name comes from meta universe index)."""
     return {
-        "coin": coin,
         "openInterest": str(oi),
         "funding": str(funding),
         "markPx": str(mark_px),
@@ -65,20 +68,27 @@ def _make_asset_ctx(
     }
 
 
+def _meta(names: list[str]) -> dict:
+    return {"universe": [{"name": n} for n in names]}
+
+
 def _mock_hl(
     *,
     ctxs: list[dict] | None = None,
+    universe: list[str] | None = None,
     oi_cap: list[str] | None = None,
     l2_bids: list[dict] | None = None,
     l2_asks: list[dict] | None = None,
 ) -> MagicMock:
     hl = MagicMock()
-    meta_universe = [{"universe": []}]
     asset_ctxs = ctxs if ctxs is not None else [
-        _make_asset_ctx("BTC", oi=5_000_000, funding=0.0001, mark_px=65000, oracle_px=65000),
-        _make_asset_ctx("ETH", oi=3_000_000, funding=0.00015, mark_px=3200, oracle_px=3200),
+        _asset_ctx(oi=5_000_000, funding=0.0001, mark_px=65000, oracle_px=65000),
+        _asset_ctx(oi=3_000_000, funding=0.00015, mark_px=3200, oracle_px=3200),
     ]
-    hl.meta_and_asset_ctxs.return_value = (meta_universe, asset_ctxs)
+    names = universe if universe is not None else ["BTC", "ETH"]
+    if len(names) != len(asset_ctxs):
+        names = [f"C{i}" for i in range(len(asset_ctxs))]
+    hl.meta_and_asset_ctxs.return_value = (_meta(names), asset_ctxs)
     hl.post.return_value = oi_cap if oi_cap is not None else []
     bids = l2_bids if l2_bids is not None else [{"sz": "10.0"}] * 10
     asks = l2_asks if l2_asks is not None else [{"sz": "10.0"}] * 10
@@ -239,8 +249,8 @@ class TestForecasterScoring:
         cfg = _base_config()
         hl = _mock_hl(
             ctxs=[
-                _make_asset_ctx("BTC", oi=5_000_000, funding=0.00005, mark_px=65000, oracle_px=65000),
-                _make_asset_ctx("ETH", oi=3_000_000, funding=0.00005, mark_px=3200, oracle_px=3200),
+                _asset_ctx(oi=5_000_000, funding=0.00005, mark_px=65000, oracle_px=65000),
+                _asset_ctx(oi=3_000_000, funding=0.00005, mark_px=3200, oracle_px=3200),
             ],
             oi_cap=[],
         )
@@ -253,8 +263,9 @@ class TestForecasterScoring:
         cfg = _base_config()
         hl = _mock_hl(
             ctxs=[
-                _make_asset_ctx("BTC", oi=5_000_000, funding=0.005, mark_px=65000, oracle_px=65000),
+                _asset_ctx(oi=5_000_000, funding=0.005, mark_px=65000, oracle_px=65000),
             ],
+            universe=["BTC"],
             oi_cap=[],
         )
         f = CascadeForecaster(cfg, hl)
@@ -266,8 +277,9 @@ class TestForecasterScoring:
         cfg = _base_config()
         hl = _mock_hl(
             ctxs=[
-                _make_asset_ctx("BTC", oi=5_000_000, funding=0.0001, mark_px=65500, oracle_px=65000),
+                _asset_ctx(oi=5_000_000, funding=0.0001, mark_px=65500, oracle_px=65000),
             ],
+            universe=["BTC"],
         )
         f = CascadeForecaster(cfg, hl)
         r = f.assess()
@@ -298,30 +310,29 @@ class TestForecasterScoring:
     def test_oi_delta_negative_on_liquidation_unwind(self) -> None:
         cfg = _base_config()
         initial_ctxs = [
-            _make_asset_ctx("BTC", oi=5_000_000),
-            _make_asset_ctx("ETH", oi=3_000_000),
+            _asset_ctx(oi=5_000_000),
+            _asset_ctx(oi=3_000_000),
         ]
         hl = _mock_hl(ctxs=initial_ctxs)
         f = CascadeForecaster(cfg, hl)
         f.assess()  # seed OI baseline
 
-        import time
         f._prev_oi_mono -= 5.0  # simulate time passing
 
         dropped_ctxs = [
-            _make_asset_ctx("BTC", oi=4_000_000),
-            _make_asset_ctx("ETH", oi=2_500_000),
+            _asset_ctx(oi=4_000_000),
+            _asset_ctx(oi=2_500_000),
         ]
-        hl.meta_and_asset_ctxs.return_value = ([{"universe": []}], dropped_ctxs)
+        hl.meta_and_asset_ctxs.return_value = (_meta(["BTC", "ETH"]), dropped_ctxs)
         r = f.assess()
         assert r.oi_delta_pct < 0.0
 
     def test_score_clamped_to_zero_one(self) -> None:
         cfg = _base_config()
         extreme_ctxs = [
-            _make_asset_ctx("BTC", oi=1, funding=1.0, mark_px=200000, oracle_px=65000),
+            _asset_ctx(oi=1, funding=1.0, mark_px=200000, oracle_px=65000),
         ]
-        hl = _mock_hl(ctxs=extreme_ctxs, oi_cap=["A"] * 50)
+        hl = _mock_hl(ctxs=extreme_ctxs, universe=["BTC"], oi_cap=["A"] * 50)
         f = CascadeForecaster(cfg, hl)
         r = f.assess()
         assert 0.0 <= r.risk_score <= 1.0
@@ -458,3 +469,70 @@ class TestForecasterConfigDriven:
             premium_abs=0, oi_at_cap_count=0, book_thinning_score=0,
         )
         assert s_loose > s_tight
+
+    def test_universe_index_names_used_not_ctx_coin(self) -> None:
+        """HL pairs ctxs[i] with meta.universe[i].name; ctx rows omit coin."""
+        cfg = _base_config()
+        names = ["BTC", "ETH"]
+        ctxs = [
+            _asset_ctx(oi=9_000_000, funding=0.0001, mark_px=100, oracle_px=100),
+            _asset_ctx(oi=1_000_000, funding=0.0001, mark_px=100, oracle_px=100),
+        ]
+        hl = MagicMock()
+        hl.meta_and_asset_ctxs.return_value = (_meta(names), ctxs)
+        hl.post.return_value = []
+        hl.l2_snapshot.return_value = {"levels": [[{"sz": "10.0"}] * 10, [{"sz": "10.0"}] * 10]}
+        f = CascadeForecaster(cfg, hl)
+        f.assess()
+        f._prev_oi_mono -= 2.0
+        ctxs2 = [
+            _asset_ctx(oi=8_000_000, funding=0.0001, mark_px=100, oracle_px=100),
+            _asset_ctx(oi=1_000_000, funding=0.0001, mark_px=100, oracle_px=100),
+        ]
+        hl.meta_and_asset_ctxs.return_value = (_meta(names), ctxs2)
+        r = f.assess()
+        assert r.oi_delta_pct < 0.0
+
+    def test_pathological_premium_capped_p95_not_elevated(self) -> None:
+        """One broken mark/oracle row must not dominate default p95 aggregate."""
+        cfg = _base_config()
+        cfg["cascade_forecaster"]["weights"] = {
+            "oi_delta": 0.0,
+            "funding": 0.0,
+            "premium": 1.0,
+            "oi_cap": 0.0,
+            "book_thin": 0.0,
+        }
+        n = 21
+        names = [f"C{i}" for i in range(n - 1)] + ["PATH"]
+        ctxs = [
+            _asset_ctx(oi=1e6, funding=0.0, mark_px=100.0, oracle_px=100.0)
+            for _ in range(n - 1)
+        ]
+        ctxs.append(
+            _asset_ctx(oi=1e6, funding=0.0, mark_px=200000.0, oracle_px=100.0)
+        )
+        hl = _mock_hl(ctxs=ctxs, universe=names, oi_cap=[])
+        f = CascadeForecaster(cfg, hl)
+        r = f.assess()
+        assert r.premium_abs == 0.0
+        assert r.risk_score < float(cfg["cascade_forecaster"]["thresholds"]["elevated"])
+
+    def test_premium_max_aggregation_uses_cap(self) -> None:
+        cfg = _base_config()
+        cfg["cascade_forecaster"]["normalization"]["premium_aggregation"] = "max"
+        cfg["cascade_forecaster"]["weights"] = {
+            "oi_delta": 0.0,
+            "funding": 0.0,
+            "premium": 1.0,
+            "oi_cap": 0.0,
+            "book_thin": 0.0,
+        }
+        hl = _mock_hl(
+            ctxs=[_asset_ctx(oi=1e6, funding=0.0, mark_px=200000.0, oracle_px=100.0)],
+            universe=["PATH"],
+            oi_cap=[],
+        )
+        f = CascadeForecaster(cfg, hl)
+        r = f.assess()
+        assert abs(r.premium_abs - 0.05) < 1e-9

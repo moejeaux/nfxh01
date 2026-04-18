@@ -16,12 +16,26 @@ from src.market.cascade_risk import (
 logger = logging.getLogger(__name__)
 
 
+def _percentile_nearest_rank(sorted_vals: list[float], q: float) -> float:
+    """q in (0,1]; nearest-rank percentile; empty -> 0."""
+    if not sorted_vals:
+        return 0.0
+    xs = sorted_vals
+    if len(xs) == 1:
+        return xs[0]
+    idx = min(len(xs) - 1, max(0, int(round(q * (len(xs) - 1)))))
+    return xs[idx]
+
+
 class CascadeForecaster:
     """Derives a CascadeRisk snapshot from Hyperliquid market state.
 
-    Consumes ``meta_and_asset_ctxs()`` for OI + funding + premium,
+    Consumes ``meta_and_asset_ctxs()`` for OI + funding + mark/oracle premium,
     ``l2_snapshot()`` for book depth, and the ``perpsAtOpenInterestCap``
     info query for OI-cap detection.
+
+    Asset rows are aligned with ``meta["universe"][i]["name"]`` (same as
+    ``src.market.data_feed``); ctx dicts may omit ``coin``.
 
     All thresholds come from ``config["cascade_forecaster"]``.
     """
@@ -56,14 +70,36 @@ class CascadeForecaster:
                 error=str(e),
             )
 
+    def _aligned_rows(self) -> list[tuple[str, dict[str, Any]]]:
+        """Pair universe[i].name with ctxs[i] (HL contract)."""
+        raw = self._hl.meta_and_asset_ctxs()
+        if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+            return []
+        meta = raw[0] if isinstance(raw[0], dict) else {}
+        ctxs = raw[1]
+        if not isinstance(meta, dict) or not isinstance(ctxs, list):
+            return []
+        universe = meta.get("universe") or []
+        out: list[tuple[str, dict[str, Any]]] = []
+        for i, asset_ctx in enumerate(ctxs):
+            if not isinstance(asset_ctx, dict):
+                continue
+            if i >= len(universe) or not isinstance(universe[i], dict):
+                continue
+            name = universe[i].get("name")
+            if not name:
+                continue
+            out.append((str(name), asset_ctx))
+        return out
+
     def _compute(self, now: datetime) -> CascadeRisk:
-        meta_ctxs = self._fetch_meta_and_ctxs()
+        rows = self._aligned_rows()
         oi_at_cap = self._fetch_oi_at_cap()
         book_thin = self._assess_book_depth()
 
-        oi_delta_pct = self._compute_oi_delta(meta_ctxs)
-        funding_abs = self._max_abs_funding(meta_ctxs)
-        premium_abs = self._max_abs_premium(meta_ctxs)
+        oi_delta_pct = self._compute_oi_delta(rows)
+        funding_abs = self._max_abs_funding(rows)
+        premium_abs = self._aggregate_premium(rows)
 
         score = self._score(
             oi_delta_pct=oi_delta_pct,
@@ -74,11 +110,18 @@ class CascadeForecaster:
         )
         level = self._classify(score)
 
+        oi_fmt = "%.6f" if abs(oi_delta_pct) < 1e-4 else "%.4f"
         logger.info(
-            "MARKET_CASCADE_ASSESSED score=%.3f level=%s oi_delta_pct=%.4f "
-            "funding_abs=%.6f premium_abs=%.6f oi_cap_count=%d book_thin=%.3f",
-            score, level.value, oi_delta_pct, funding_abs,
-            premium_abs, len(oi_at_cap), book_thin,
+            "MARKET_CASCADE_ASSESSED score=%.3f level=%s oi_delta_pct="
+            + oi_fmt
+            + " funding_abs=%.6f premium_abs=%.6f oi_cap_count=%d book_thin=%.3f",
+            score,
+            level.value,
+            oi_delta_pct,
+            funding_abs,
+            premium_abs,
+            len(oi_at_cap),
+            book_thin,
         )
 
         return CascadeRisk(
@@ -96,11 +139,6 @@ class CascadeForecaster:
     # ------------------------------------------------------------------
     # HL data fetchers
     # ------------------------------------------------------------------
-
-    def _fetch_meta_and_ctxs(self) -> list[dict[str, Any]]:
-        """Fetch per-asset OI, funding, mark/oracle via meta_and_asset_ctxs()."""
-        raw = self._hl.meta_and_asset_ctxs()
-        return list(raw[1]) if isinstance(raw, (list, tuple)) and len(raw) >= 2 else []
 
     def _fetch_oi_at_cap(self) -> list[str]:
         """Coins that have reached their OI ceiling."""
@@ -145,13 +183,12 @@ class CascadeForecaster:
     # Signal computation
     # ------------------------------------------------------------------
 
-    def _compute_oi_delta(self, ctxs: list[dict[str, Any]]) -> float:
-        """Aggregate OI % change across top coins since last poll."""
+    def _compute_oi_delta(self, rows: list[tuple[str, dict[str, Any]]]) -> float:
+        """Aggregate OI % change across coins since last poll."""
         now_mono = time.monotonic()
         current_oi: dict[str, float] = {}
-        for c in ctxs:
-            coin = c.get("coin", "")
-            oi_val = float(c.get("openInterest", 0))
+        for coin, c in rows:
+            oi_val = float(c.get("openInterest", 0) or 0)
             if coin and oi_val > 0:
                 current_oi[coin] = oi_val
 
@@ -169,22 +206,49 @@ class CascadeForecaster:
             return 0.0
         return (total_now - total_prev) / total_prev
 
-    def _max_abs_funding(self, ctxs: list[dict[str, Any]]) -> float:
-        if not ctxs:
+    def _max_abs_funding(self, rows: list[tuple[str, dict[str, Any]]]) -> float:
+        if not rows:
             return 0.0
-        vals = [abs(float(c.get("funding", 0))) for c in ctxs]
+        vals = [abs(float(c.get("funding", 0) or 0)) for _, c in rows]
         return max(vals) if vals else 0.0
 
-    def _max_abs_premium(self, ctxs: list[dict[str, Any]]) -> float:
-        if not ctxs:
+    def _raw_premium_ratio(self, c: dict[str, Any]) -> float | None:
+        mark = float(c.get("markPx", 0) or 0)
+        oracle = float(c.get("oraclePx", 0) or 0)
+        if oracle <= 0 or mark <= 0:
+            return None
+        return abs(mark / oracle - 1.0)
+
+    def _aggregate_premium(self, rows: list[tuple[str, dict[str, Any]]]) -> float:
+        norm = self._cfg.get("normalization") or {}
+        cap = float(norm.get("premium_per_asset_cap", 0.05))
+        mode = str(norm.get("premium_aggregation", "p95")).lower().strip()
+        mean_top_n = int(norm.get("premium_mean_top_n", 10))
+
+        capped: list[float] = []
+        for coin, c in rows:
+            raw = self._raw_premium_ratio(c)
+            if raw is None:
+                continue
+            if raw > cap:
+                logger.info(
+                    "MARKET_CASCADE_PREMIUM_OUTLIER coin=%s raw_ratio=%.6f cap=%.6f",
+                    coin,
+                    raw,
+                    cap,
+                )
+            capped.append(min(raw, cap))
+
+        if not capped:
             return 0.0
-        vals = []
-        for c in ctxs:
-            mark = float(c.get("markPx", 0))
-            oracle = float(c.get("oraclePx", 0))
-            if oracle > 0:
-                vals.append(abs(mark / oracle - 1.0))
-        return max(vals) if vals else 0.0
+        if mode == "max":
+            return max(capped)
+        if mode == "mean_top_n":
+            n = max(1, mean_top_n)
+            top = sorted(capped, reverse=True)[:n]
+            return sum(top) / len(top)
+        # default p95
+        return _percentile_nearest_rank(sorted(capped), 0.95)
 
     def _score(
         self,

@@ -178,6 +178,8 @@ retro:
   initial_delay_seconds: 120
   catch_up_min_delay_seconds: 5
   advisor_schema_version: 1
+  # Temperature for schema-repair Ollama retries only (first call uses ``temperature`` below).
+  advisor_retry_temperature: 0.0
   config_schema_version: 1
   # Ollama /api/chat: ask for JSON mode (reduces prose-only responses). Set false if API errors.
   ollama_json_response_format: true
@@ -296,6 +298,11 @@ cascade_forecaster:
     oi_delta_extreme_pct: 0.05
     funding_extreme: 0.001
     premium_extreme: 0.005
+    # Per-asset mark/oracle mismatch cap before aggregation (stale oracle / micro caps).
+    premium_per_asset_cap: 0.05
+    # Aggregation over capped per-asset ratios: p95 | max | mean_top_n
+    premium_aggregation: p95
+    premium_mean_top_n: 10
     oi_cap_extreme_count: 10
   # Score → level classification boundaries.
   thresholds:
