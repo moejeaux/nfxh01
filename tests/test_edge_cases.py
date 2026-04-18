@@ -83,6 +83,8 @@ def mock_risk_layer():
     risk_layer.validate.return_value = RiskDecision(approved=True, reason="")
     risk_layer.portfolio_state = Mock()
     risk_layer.portfolio_state.get_open_positions.return_value = []
+    # AceVaultEngine wraps this call in ``float(...)``; default Mock() would fail.
+    risk_layer.get_safety_position_multiplier.return_value = 1.0
     return risk_layer
 
 

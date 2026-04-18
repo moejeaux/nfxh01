@@ -161,7 +161,9 @@ async def test_log_exit_updates_correct_fields(decision_journal, mock_asyncpg_po
     assert call_args[8] is None  # peak_r_multiple
     assert call_args[9] is None  # realized_r_multiple
     assert call_args[10] is None  # peak_r_capture_ratio
-    assert call_args[11] == decision_id  # WHERE id
+    # fee_paid_usd (migration 005) — NULL when journal has no fee-rate configured.
+    assert call_args[11] is None  # fee_paid_usd
+    assert call_args[12] == decision_id  # WHERE id
 
 
 @pytest.mark.asyncio

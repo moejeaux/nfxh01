@@ -26,6 +26,7 @@ class AceExit:
     take_profit_price: float | None = None
     peak_r_multiple: float | None = None
     realized_r_multiple: float | None = None
+    position_size_usd: float | None = None
 
 
 def _to_ace_exit(u: UniversalExit) -> AceExit:
@@ -42,6 +43,7 @@ def _to_ace_exit(u: UniversalExit) -> AceExit:
         take_profit_price=u.take_profit_price,
         peak_r_multiple=u.peak_r_multiple,
         realized_r_multiple=u.realized_r_multiple,
+        position_size_usd=u.position_size_usd,
     )
 
 

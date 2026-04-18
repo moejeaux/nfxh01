@@ -311,6 +311,7 @@ class LiveExitEngine:
                         engine_id=engine_id,
                         peak_r_multiple=peak_r,
                         realized_r_multiple=realized_r,
+                        position_size_usd=size_usd if size_usd > 0 else None,
                     )
                 )
                 self._store.remove(pos.position_id)

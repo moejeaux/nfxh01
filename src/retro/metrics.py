@@ -131,6 +131,38 @@ def peak_r_capture_stats(closed: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def fee_drag_pct(closed: list[dict[str, Any]]) -> float:
+    """Aggregate fee drag as percent of notional turnover.
+
+    ``fee_drag_pct = sum(fee_paid_usd) / sum(position_size_usd) * 100``
+
+    Rows missing either column (e.g. pre-migration history or trades where fee
+    estimation was disabled) are excluded from BOTH numerator and denominator so
+    partial coverage doesn't bias the gate reading downward toward "fees look fine".
+    Returns 0.0 when no row has both fields populated (gate then falls through to
+    the profit-factor checks rather than tripping on missing data).
+    """
+    total_fees = 0.0
+    total_notional = 0.0
+    for r in closed:
+        fee = r.get("fee_paid_usd")
+        notional = r.get("position_size_usd")
+        if fee is None or notional is None:
+            continue
+        try:
+            f = float(fee)
+            n = float(notional)
+        except (TypeError, ValueError):
+            continue
+        if n <= 0:
+            continue
+        total_fees += f
+        total_notional += n
+    if total_notional <= 0:
+        return 0.0
+    return (total_fees / total_notional) * 100.0
+
+
 def build_metrics_from_decision_rows(
     rows: list[dict[str, Any]],
     *,
@@ -155,7 +187,7 @@ def build_metrics_from_decision_rows(
         closing_trade_count=len(closed),
         global_profit_factor=_profit_factor(pnls),
         recent_profit_factor=_profit_factor(recent_pnls) if recent_pnls else 0.0,
-        fee_drag_pct=0.0,
+        fee_drag_pct=fee_drag_pct(closed),
         win_count=sum(1 for x in pnls if x > 0),
         loss_count=sum(1 for x in pnls if x < 0),
     )

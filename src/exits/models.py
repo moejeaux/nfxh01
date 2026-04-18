@@ -61,3 +61,4 @@ class UniversalExit:
     engine_id: str = "acevault"
     peak_r_multiple: float | None = None
     realized_r_multiple: float | None = None
+    position_size_usd: float | None = None

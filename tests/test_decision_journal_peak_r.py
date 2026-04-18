@@ -88,7 +88,7 @@ async def test_log_exit_includes_peak_r_columns(journal, pool_conn):
 
     conn.execute.assert_awaited_once()
     args = conn.execute.call_args[0]
-    # Updated 10-column query + decision_id as the 11th bind.
+    # 11-column query (peak-R + fee migration 005) + decision_id as the 12th bind.
     assert args[1] == 48000.0
     assert args[2] == "trailing_stop"
     assert args[3] == 50.0
@@ -99,11 +99,14 @@ async def test_log_exit_includes_peak_r_columns(journal, pool_conn):
     assert args[8] == 2.5
     assert args[9] == 1.5
     assert args[10] == pytest.approx(0.6)
-    assert args[11] == decision_id
+    # Journal has no taker_bps set in this fixture, so fee_paid_usd binds NULL.
+    assert args[11] is None
+    assert args[12] == decision_id
     sql = args[0]
     assert "peak_r_multiple" in sql
     assert "realized_r_multiple" in sql
     assert "peak_r_capture_ratio" in sql
+    assert "fee_paid_usd" in sql
 
 
 @pytest.mark.asyncio
@@ -200,6 +203,7 @@ async def test_log_track_a_exit_writes_strategy_decisions_row(journal, pool_conn
     assert "UPDATE strategy_decisions" in sql
     assert "peak_r_multiple" in sql
     assert "outcome_recorded_at" in sql
+    assert "fee_paid_usd" in sql
     assert args[1] == 2600.0
     assert args[2] == "time_stop"
     assert args[3] == pytest.approx(-2.25)
@@ -209,7 +213,8 @@ async def test_log_track_a_exit_writes_strategy_decisions_row(journal, pool_conn
     assert args[7] == 0.8
     assert args[8] == -0.4
     assert args[9] == pytest.approx(-0.5)
-    assert args[10] == position_id
+    assert args[10] is None  # fee_paid_usd NULL without taker_bps config
+    assert args[11] == position_id
 
 
 @pytest.mark.asyncio

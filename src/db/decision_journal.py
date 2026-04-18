@@ -9,6 +9,10 @@ from src.engines.acevault.models import AceSignal
 from src.engines.acevault.exit import AceExit
 from src.exits.models import UniversalExit
 from src.nxfh01.orchestration.types import NormalizedEntryIntent
+from src.retro.fee_estimation import (
+    estimate_round_trip_fee_usd,
+    exit_notional_from_entry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +34,14 @@ class DecisionJournal:
     def __init__(self, database_url: str) -> None:
         self._db_url = database_url
         self._pool = None  # asyncpg pool
+        self._fee_taker_bps_per_side: float | None = None
 
     def is_connected(self) -> bool:
         return self._pool is not None
+
+    def set_fee_taker_bps_per_side(self, bps: float | None) -> None:
+        """Expose fee-rate injection for callers that build the journal without config."""
+        self._fee_taker_bps_per_side = bps
 
     async def connect(self, config: dict | None = None) -> None:
         """Initialize the connection pool (sizes from ``config['database']``)."""
@@ -48,10 +57,33 @@ class DecisionJournal:
             min_size=min_s,
             max_size=max_s,
         )
+
+        fee_cfg = (
+            ((config or {}).get("retro") or {}).get("fee_estimation") or {}
+        )
+        raw_bps = fee_cfg.get("taker_bps_per_side")
+        if raw_bps is None:
+            self._fee_taker_bps_per_side = None
+            logger.warning(
+                "DECISION_JOURNAL_FEE_EST_DISABLED reason=missing_config "
+                "path=retro.fee_estimation.taker_bps_per_side"
+            )
+        else:
+            try:
+                self._fee_taker_bps_per_side = float(raw_bps)
+            except (TypeError, ValueError):
+                self._fee_taker_bps_per_side = None
+                logger.warning(
+                    "DECISION_JOURNAL_FEE_EST_DISABLED reason=invalid_config value=%r",
+                    raw_bps,
+                )
+
         logger.info(
-            "DECISION_JOURNAL_CONNECTED pool_initialized=true min=%d max=%d",
+            "DECISION_JOURNAL_CONNECTED pool_initialized=true min=%d max=%d "
+            "fee_taker_bps_per_side=%s",
             min_s,
             max_s,
+            self._fee_taker_bps_per_side if self._fee_taker_bps_per_side is not None else "None",
         )
 
     async def log_entry(self, signal: AceSignal, fathom_result: dict | None = None) -> str:
@@ -173,12 +205,21 @@ class DecisionJournal:
         realized_r = exit.realized_r_multiple
         capture_ratio = _safe_capture_ratio(peak_r, realized_r)
 
+        entry_notional = exit.position_size_usd
+        exit_notional = exit_notional_from_entry(
+            entry_notional, exit.entry_price, exit.exit_price
+        )
+        fee_paid_usd = estimate_round_trip_fee_usd(
+            entry_notional, exit_notional, self._fee_taker_bps_per_side
+        )
+
         query = """
         UPDATE strategy_decisions
         SET exit_price = $1, exit_reason = $2, pnl_usd = $3, pnl_pct = $4,
             hold_duration_seconds = $5, outcome_recorded_at = $6,
-            peak_r_multiple = $7, realized_r_multiple = $8, peak_r_capture_ratio = $9
-        WHERE id = $10::uuid
+            peak_r_multiple = $7, realized_r_multiple = $8, peak_r_capture_ratio = $9,
+            fee_paid_usd = $10
+        WHERE id = $11::uuid
         """
 
         async with self._pool.acquire() as conn:
@@ -193,12 +234,13 @@ class DecisionJournal:
                 peak_r,
                 realized_r,
                 capture_ratio,
+                fee_paid_usd,
                 position_id,
             )
 
         logger.info(
             "DECISION_JOURNAL_TRACK_A_EXIT_LOGGED position_id=%s coin=%s engine_id=%s "
-            "exit_reason=%s pnl_usd=%.4f peak_r=%s realized_r=%s capture=%s",
+            "exit_reason=%s pnl_usd=%.4f peak_r=%s realized_r=%s capture=%s fee_est_usd=%s",
             position_id,
             exit.coin,
             exit.engine_id,
@@ -207,6 +249,7 @@ class DecisionJournal:
             f"{peak_r:.4f}" if peak_r is not None else "None",
             f"{realized_r:.4f}" if realized_r is not None else "None",
             f"{capture_ratio:.4f}" if capture_ratio is not None else "None",
+            f"{fee_paid_usd:.6f}" if fee_paid_usd is not None else "None",
         )
 
     async def log_exit(
@@ -220,12 +263,21 @@ class DecisionJournal:
         realized_r = exit.realized_r_multiple
         capture_ratio = _safe_capture_ratio(peak_r, realized_r)
 
+        entry_notional = exit.position_size_usd
+        exit_notional = exit_notional_from_entry(
+            entry_notional, exit.entry_price, exit.exit_price
+        )
+        fee_paid_usd = estimate_round_trip_fee_usd(
+            entry_notional, exit_notional, self._fee_taker_bps_per_side
+        )
+
         query = """
         UPDATE acevault_decisions
         SET exit_price = $1, exit_reason = $2, pnl_usd = $3, pnl_pct = $4,
             hold_duration_seconds = $5, outcome_recorded_at = $6, regime_at_close = $7,
-            peak_r_multiple = $8, realized_r_multiple = $9, peak_r_capture_ratio = $10
-        WHERE id = $11
+            peak_r_multiple = $8, realized_r_multiple = $9, peak_r_capture_ratio = $10,
+            fee_paid_usd = $11
+        WHERE id = $12
         """
 
         async with self._pool.acquire() as conn:
@@ -241,12 +293,13 @@ class DecisionJournal:
                 peak_r,
                 realized_r,
                 capture_ratio,
+                fee_paid_usd,
                 decision_id,
             )
 
         logger.info(
             "DECISION_JOURNAL_EXIT_LOGGED decision_id=%s coin=%s exit_reason=%s "
-            "pnl_usd=%.2f peak_r=%s realized_r=%s capture=%s",
+            "pnl_usd=%.2f peak_r=%s realized_r=%s capture=%s fee_est_usd=%s",
             decision_id,
             exit.coin,
             exit.exit_reason,
@@ -254,6 +307,7 @@ class DecisionJournal:
             f"{peak_r:.4f}" if peak_r is not None else "None",
             f"{realized_r:.4f}" if realized_r is not None else "None",
             f"{capture_ratio:.4f}" if capture_ratio is not None else "None",
+            f"{fee_paid_usd:.6f}" if fee_paid_usd is not None else "None",
         )
 
     async def get_similar_decisions(
@@ -355,7 +409,9 @@ class DecisionJournal:
                entry_price, stop_loss_price, take_profit_price, position_size_usd,
                fathom_override, fathom_size_mult, fathom_reasoning,
                exit_price, exit_reason, pnl_usd, pnl_pct, hold_duration_seconds,
-               outcome_recorded_at, regime_at_close
+               outcome_recorded_at, regime_at_close,
+               peak_r_multiple, realized_r_multiple, peak_r_capture_ratio,
+               fee_paid_usd, slippage_bps
         FROM acevault_decisions
         WHERE created_at >= $1 AND created_at < $2
         ORDER BY created_at DESC
@@ -384,7 +440,9 @@ class DecisionJournal:
                entry_price, stop_loss_price, take_profit_price, position_size_usd,
                fathom_override, fathom_size_mult, fathom_reasoning,
                exit_price, exit_reason, pnl_usd, pnl_pct, hold_duration_seconds,
-               outcome_recorded_at, regime_at_close
+               outcome_recorded_at, regime_at_close,
+               peak_r_multiple, realized_r_multiple, peak_r_capture_ratio,
+               fee_paid_usd, slippage_bps
         FROM acevault_decisions
         WHERE outcome_recorded_at IS NOT NULL AND pnl_usd IS NOT NULL
         ORDER BY outcome_recorded_at DESC

@@ -195,6 +195,11 @@ retro:
     global_pf_floor: 1.0
     max_fee_drag_pct: 0.5
     cooldown_minutes_after_change: 0
+  # Hyperliquid perps taker fee (0.035% per side = 3.5 bps). Used by
+  # DecisionJournal.log_exit to persist an estimated fee_paid_usd until the
+  # executor surfaces realized fill fees. Set to null to disable the estimate.
+  fee_estimation:
+    taker_bps_per_side: 3.5
   telegram_notify: false
   telegram_message_max_chars: 3500
 
