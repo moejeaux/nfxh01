@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "pytest-asyncio>=0.24"]
 
 [project.scripts]
 nxfh01 = "nxfh01.main:main"
@@ -32,6 +32,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests", "src"]
 pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "live: marks tests that call real Hyperliquid mainnet API (run deliberately)",
+    "asyncio: async tests (pytest-asyncio; optional explicit mark)",
 ]
