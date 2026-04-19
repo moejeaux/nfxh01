@@ -77,6 +77,7 @@ def _ctx_trend_down_green() -> BTCMarketContext:
 
 def test_shock_veto_blocks_entry(kill_switch: KillSwitch) -> None:
     cfg = {
+        "universe": {"enabled": False},
         "risk": _risk_block(),
         "acp": {"min_trade_size_usd": 10},
         "btc_context_policy": {
@@ -98,6 +99,7 @@ def test_shock_veto_blocks_entry(kill_switch: KillSwitch) -> None:
 
 def test_conflict_veto_long_in_downtrend(kill_switch: KillSwitch) -> None:
     cfg = {
+        "universe": {"enabled": False},
         "risk": _risk_block(),
         "acp": {"min_trade_size_usd": 10},
         "btc_context_policy": {
@@ -119,6 +121,7 @@ def test_conflict_veto_long_in_downtrend(kill_switch: KillSwitch) -> None:
 
 def test_btc_lanes_skips_conflict_veto(kill_switch: KillSwitch) -> None:
     cfg = {
+        "universe": {"enabled": False},
         "risk": _risk_block(),
         "acp": {"min_trade_size_usd": 10},
         "btc_context_policy": {
@@ -145,6 +148,7 @@ def test_btc_lanes_skips_conflict_veto(kill_switch: KillSwitch) -> None:
 
 def test_portfolio_beta_cap_rejects(kill_switch: KillSwitch) -> None:
     cfg = {
+        "universe": {"enabled": False},
         "risk": _risk_block(),
         "acp": {"min_trade_size_usd": 10},
         "strategies": {
@@ -181,6 +185,7 @@ def test_portfolio_beta_cap_rejects(kill_switch: KillSwitch) -> None:
 
 def test_sizing_reduces_when_enabled(kill_switch: KillSwitch) -> None:
     cfg = {
+        "universe": {"enabled": False},
         "risk": _risk_block(),
         "acp": {"min_trade_size_usd": 10},
         "btc_context_policy": {

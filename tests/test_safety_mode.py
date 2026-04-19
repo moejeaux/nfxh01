@@ -96,6 +96,7 @@ def test_legacy_min_profit_factor_in_safety_mode_still_used():
 def test_validate_scales_position_when_multiplier_below_one():
     cfg = {
         "acp": {"min_trade_size_usd": 10},
+        "universe": {"enabled": False},
         "risk": {
             "total_capital_usd": 100000,
             "max_portfolio_drawdown_24h": 0.5,
@@ -124,6 +125,7 @@ def test_validate_scales_position_when_multiplier_below_one():
 def test_validate_rejects_below_acp_min_after_safety_scale():
     cfg = {
         "acp": {"min_trade_size_usd": 10},
+        "universe": {"enabled": False},
         "risk": {
             "total_capital_usd": 100000,
             "max_portfolio_drawdown_24h": 0.5,

@@ -37,11 +37,13 @@ class UnifiedRiskLayer:
         portfolio_state: PortfolioState,
         kill_switch: Any,
         btc_context_holder: BTCMarketContextHolder | None = None,
+        universe_manager: Any | None = None,
     ) -> None:
         self._config = config
         self._portfolio_state = portfolio_state
         self._kill_switch = kill_switch
         self._btc_holder = btc_context_holder
+        self._universe_manager = universe_manager
         self._risk_cfg = config.get("risk", {})
         self._safety_position_multiplier = 1.0
 
@@ -60,6 +62,27 @@ class UnifiedRiskLayer:
             reason = f"kill_switch_active:{engine_id}"
             logger.warning("RISK_REJECTED engine=%s reason=%s", engine_id, reason)
             return RiskDecision(approved=False, reason=reason)
+
+        ucfg = self._config.get("universe") or {}
+        if bool(ucfg.get("enabled", False)) and bool(
+            ucfg.get("block_new_entries_outside_universe", True)
+        ):
+            if self._universe_manager is None:
+                logger.warning(
+                    "RISK_TOP25_MANAGER_MISSING engine=%s coin=%s",
+                    engine_id,
+                    getattr(signal, "coin", ""),
+                )
+                return RiskDecision(approved=False, reason="top25_manager_missing")
+            coin_raw = getattr(signal, "coin", "")
+            coin = coin_raw.strip() if isinstance(coin_raw, str) else ""
+            if not self._universe_manager.can_open(coin):
+                logger.warning(
+                    "RISK_TRADE_BLOCKED_OUTSIDE_TOP25_UNIVERSE engine=%s coin=%s",
+                    engine_id,
+                    coin or coin_raw,
+                )
+                return RiskDecision(approved=False, reason="outside_top25_universe")
 
         try:
             base_size = float(signal.position_size_usd)

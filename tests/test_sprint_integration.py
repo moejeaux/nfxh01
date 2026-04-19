@@ -58,6 +58,7 @@ def _make_config(
             "max_gross_multiplier": 3.0,
             "max_correlated_longs": 3,
         },
+        "universe": {"enabled": False},
     }
 
 

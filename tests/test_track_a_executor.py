@@ -25,6 +25,7 @@ def base_config():
             "max_correlated_longs": 3,
             "min_available_capital_usd": 10.50,
         },
+        "universe": {"enabled": False},
     }
 
 

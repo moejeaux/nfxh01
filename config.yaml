@@ -14,6 +14,13 @@ hyperliquid_api:
   backoff_max_seconds: 120.0
   backoff_jitter_ratio: 0.35
 
+universe:
+  enabled: true
+  top_n: 25
+  refresh_seconds: 600
+  block_new_entries_outside_universe: true
+  allow_exit_management_outside_universe: true
+
 database:
   pool_min_size: 1
   pool_max_size: 4

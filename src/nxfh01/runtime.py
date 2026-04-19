@@ -30,6 +30,7 @@ from src.market.btc_context_holder import BTCMarketContextHolder
 from src.market.cascade_forecaster import CascadeForecaster
 from src.market.cascade_risk import CascadeRiskHolder
 from src.market_data.hl_rate_limited_info import RateLimitedInfo
+from src.market_universe.top25_universe import Top25UniverseManager
 from src.regime.detector import RegimeDetector
 from src.risk.engine_killswitch import KillSwitch
 from src.risk.portfolio_state import PortfolioState
@@ -140,11 +141,22 @@ async def build_context(config: dict) -> dict:
     btc_context_holder = BTCMarketContextHolder()
     btc_context_engine = BTCMarketContextEngine(config)
     cascade_risk_holder = CascadeRiskHolder()
-    risk_layer = UnifiedRiskLayer(
-        config, portfolio_state, kill_switch, btc_context_holder=btc_context_holder
-    )
 
     hl_client = await init_hl_client(config)
+
+    universe_manager: Top25UniverseManager | None = None
+    ucfg = config.get("universe") or {}
+    if bool(ucfg.get("enabled", False)):
+        universe_manager = Top25UniverseManager(hl_client, config)
+        universe_manager.refresh()
+
+    risk_layer = UnifiedRiskLayer(
+        config,
+        portfolio_state,
+        kill_switch,
+        btc_context_holder=btc_context_holder,
+        universe_manager=universe_manager,
+    )
     regime_detector = RegimeDetector(config, data_fetcher=None)
 
     cascade_forecaster: CascadeForecaster | None = None
@@ -260,6 +272,7 @@ async def build_context(config: dict) -> dict:
         decision_journal=journal,
         cascade_forecaster=cascade_forecaster,
         cascade_risk_holder=cascade_risk_holder,
+        universe_manager=universe_manager,
     )
 
     tick_interval = float(
@@ -290,4 +303,5 @@ async def build_context(config: dict) -> dict:
         "track_a_executor": track_a_executor,
         "track_exit_engine": track_exit_engine,
         "tick_interval_seconds": tick_interval,
+        "universe_manager": universe_manager,
     }

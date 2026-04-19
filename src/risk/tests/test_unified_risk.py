@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -22,7 +23,7 @@ def _make_config(**overrides):
         "max_correlated_longs": 3,
     }
     risk.update(overrides)
-    return {"risk": risk}
+    return {"risk": risk, "universe": {"enabled": False}}
 
 
 @pytest.fixture
@@ -298,3 +299,53 @@ class TestGetAvailableCapital:
         portfolio_state.register_position("a", _long_position("p1", size=2000.0))
         rl = UnifiedRiskLayer(config, portfolio_state, kill_switch)
         assert rl.get_available_capital("acevault") == 0.0
+
+
+class TestTop25UniverseGate:
+    def test_manager_missing_when_universe_enabled(
+        self, portfolio_state, kill_switch
+    ):
+        config = {
+            "risk": {
+                "total_capital_usd": 10000,
+                "max_portfolio_drawdown_24h": 0.05,
+                "max_gross_multiplier": 3.0,
+                "max_correlated_longs": 3,
+            },
+            "universe": {
+                "enabled": True,
+                "block_new_entries_outside_universe": True,
+            },
+        }
+        rl = UnifiedRiskLayer(
+            config, portfolio_state, kill_switch, universe_manager=None
+        )
+        sig = FakeSignal(coin="BTC", side="long", position_size_usd=100.0)
+        r = rl.validate(sig, "acevault")
+        assert r.approved is False
+        assert r.reason == "top25_manager_missing"
+
+    def test_outside_universe_rejected(self, portfolio_state, kill_switch):
+        mgr = MagicMock()
+        mgr.can_open.return_value = False
+        config = {
+            "risk": {
+                "total_capital_usd": 100000,
+                "max_portfolio_drawdown_24h": 0.99,
+                "max_gross_multiplier": 10.0,
+                "max_correlated_longs": 30,
+                "min_available_capital_usd": 1.0,
+            },
+            "universe": {
+                "enabled": True,
+                "block_new_entries_outside_universe": True,
+            },
+        }
+        rl = UnifiedRiskLayer(
+            config, portfolio_state, kill_switch, universe_manager=mgr
+        )
+        sig = FakeSignal(coin="ZORK", side="long", position_size_usd=100.0)
+        r = rl.validate(sig, "growi")
+        assert r.approved is False
+        assert r.reason == "outside_top25_universe"
+        mgr.can_open.assert_called_once_with("ZORK")

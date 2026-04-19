@@ -23,6 +23,7 @@ from src.engines.acevault.engine import AceVaultEngine
 from src.engines.acevault.scanner import AltScanner
 from src.fathom.advisor import FathomAdvisor
 from src.market_data.hyperliquid_btc import fetch_real_market_data
+from src.market_universe.top25_universe import Top25UniverseManager
 from src.regime.detector import RegimeDetector
 from src.risk.engine_killswitch import KillSwitch
 from src.risk.portfolio_state import PortfolioState
@@ -73,7 +74,14 @@ async def run_verification_cycle(config: dict, hl_client: Info) -> dict:
     # Initialize components (same order as main.py build_context)
     kill_switch = KillSwitch(config)
     portfolio_state = PortfolioState()
-    risk_layer = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+    ucfg = config.get("universe") or {}
+    universe_manager = None
+    if bool(ucfg.get("enabled", False)):
+        universe_manager = Top25UniverseManager(hl_client, config)
+        universe_manager.refresh()
+    risk_layer = UnifiedRiskLayer(
+        config, portfolio_state, kill_switch, universe_manager=universe_manager
+    )
     regime_detector = RegimeDetector(config, data_fetcher=None)
     
     # Create AceVault engine (without degen_executor for verification)

@@ -44,6 +44,7 @@ class StrategyOrchestrator:
         decision_journal: Any | None = None,
         cascade_forecaster: Any | None = None,
         cascade_risk_holder: Any | None = None,
+        universe_manager: Any | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -58,6 +59,7 @@ class StrategyOrchestrator:
         self._decision_journal = decision_journal
         self._cascade_forecaster = cascade_forecaster
         self._cascade_risk_holder = cascade_risk_holder
+        self._universe_manager = universe_manager
 
         orch = config.get("orchestration") or {}
         self._execution_order: list[str] = list(
@@ -112,6 +114,9 @@ class StrategyOrchestrator:
             except Exception as e:
                 logger.warning("MARKET_CASCADE_TICK_FAIL error=%s", e, exc_info=True)
                 self._cascade_risk_holder.set_risk(None, tick_at=now)
+
+        if self._universe_manager is not None:
+            self._universe_manager.refresh_if_needed()
 
         if (
             self._portfolio_state is not None

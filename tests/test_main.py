@@ -81,6 +81,13 @@ def base_config():
             "mc_recovery": {"enabled": False, "engine_id": "mc"},
             "btc_lanes": {"enabled": False, "engine_id": "btc_lanes"},
         },
+        "universe": {
+            "enabled": False,
+            "top_n": 25,
+            "refresh_seconds": 600,
+            "block_new_entries_outside_universe": True,
+            "allow_exit_management_outside_universe": True,
+        },
     }
 
 
@@ -179,6 +186,7 @@ class TestBuildContext:
             "track_a_executor",
             "track_exit_engine",
             "tick_interval_seconds",
+            "universe_manager",
         }
         assert set(ctx.keys()) == expected_keys
 
