@@ -22,8 +22,8 @@ Use before enabling each rollout phase (`docs/nxfh01-production-rollout.md`). Ch
 | Check | Pass? |
 |-------|-------|
 | `research.data_dir` exists and is writable (candidate/outcome logs) | |
-| Weekly review `--archive-dir` exists (snapshot archives) | |
-| Weekly review `--output-dir` writable; if using baseline merge, `baseline_metrics.json` dropped **before** run when desired | |
+| Weekly review archive dir exists and contains at least one archive file (default `data/research/hl_meta_archive`; seed with `python scripts/append_hl_meta_archive.py` or your own exports) | |
+| Weekly review output dir writable (default `data/research/weekly_review_out`, created automatically); if using baseline merge, `baseline_metrics.json` dropped **before** run when desired | |
 | `calibration` / DB URLs (if used) reachable from this host | |
 
 ## 3. Model availability (LLM phases)

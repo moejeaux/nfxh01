@@ -23,6 +23,22 @@ This runbook does **not** cover editing `src/execution/` or `src/signal_ingress/
 
 **Purpose:** Operator-grade ranker/calibration snapshot without LLM or opportunity changes.
 
+**Default paths (repo `config.yaml`)**
+
+- Archive directory: `research.weekly_review_archive_dir` (default `data/research/hl_meta_archive`). The weekly review scans this tree for `*.json`, `*.jsonl`, `*.json.gz`, `*.jsonl.gz` containing Hyperliquid-style `metaAndAssetCtxs` payloads.
+- Output directory: `research.weekly_review_output_dir` (default `data/research/weekly_review_out`). The runner creates this directory if it does not exist.
+- Append script writes one live snapshot per invocation to `research.weekly_review_snap_filename` under the archive dir (default `snap.jsonl`), using `hyperliquid_api.api_base_url` and `research.weekly_review_info_timeout_seconds`.
+
+**Bootstrap when the archive is empty**
+
+From the repository root (requires outbound HTTPS to Hyperliquid):
+
+```bash
+python scripts/append_hl_meta_archive.py
+```
+
+Run periodically or via cron if you want a time series in `snap.jsonl`. For a one-off smoke, a single line is enough for `weekly_review` to run (historical depth will be thin until you accumulate more snapshots).
+
 **Flags / inputs**
 
 - No `intelligence` or `opportunity` changes required.
@@ -36,6 +52,10 @@ This runbook does **not** cover editing `src/execution/` or `src/signal_ingress/
 **How to run**
 
 ```bash
+# Uses research.weekly_review_archive_dir and research.weekly_review_output_dir from config.yaml
+python -m src.research.weekly_review
+
+# Or override paths explicitly:
 python -m src.research.weekly_review --archive-dir <ARCHIVE> --output-dir <OUT> [--candles-dir ...] [--outcomes-dir ...] [--config path/to/config.yaml]
 ```
 

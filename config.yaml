@@ -119,6 +119,11 @@ opportunity:
 research:
   enabled: true
   data_dir: "data/research"
+  # Phase 1 weekly review: default dirs (override with CLI --archive-dir / --output-dir).
+  weekly_review_archive_dir: "data/research/hl_meta_archive"
+  weekly_review_output_dir: "data/research/weekly_review_out"
+  weekly_review_snap_filename: "snap.jsonl"
+  weekly_review_info_timeout_seconds: 30
   save_candidate_logs: true
   save_trade_outcomes: true
 

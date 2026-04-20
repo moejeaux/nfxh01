@@ -48,6 +48,33 @@ def _load_config(config_path: str | None) -> dict[str, Any]:
     return data
 
 
+def resolve_weekly_review_dirs(
+    cfg: dict[str, Any],
+    archive_dir: str | None,
+    output_dir: str | None,
+) -> tuple[str, str]:
+    research = cfg.get("research")
+    if not isinstance(research, dict):
+        research = {}
+    arch = (archive_dir or "").strip()
+    if not arch:
+        arch = str(research.get("weekly_review_archive_dir") or "").strip()
+    out = (output_dir or "").strip()
+    if not out:
+        out = str(research.get("weekly_review_output_dir") or "").strip()
+    if not arch:
+        raise ValueError(
+            "weekly review archive_dir missing: pass --archive-dir or set "
+            "research.weekly_review_archive_dir in config.yaml"
+        )
+    if not out:
+        raise ValueError(
+            "weekly review output_dir missing: pass --output-dir or set "
+            "research.weekly_review_output_dir in config.yaml"
+        )
+    return arch, out
+
+
 def _load_candle_rows(candles_dir: str | None) -> tuple[list[dict[str, Any]], list[str]]:
     if not candles_dir:
         return [], ["candles_dir_not_provided"]
@@ -460,21 +487,34 @@ def run_weekly_review(
 
 def main() -> None:
     p = argparse.ArgumentParser(description="NXFH01 weekly research/calibration review runner")
-    p.add_argument("--archive-dir", required=True)
+    p.add_argument(
+        "--archive-dir",
+        default=None,
+        help="Directory with *.json / *.jsonl HL meta archives (default: research.weekly_review_archive_dir)",
+    )
     p.add_argument("--candles-dir", default=None)
     p.add_argument("--outcomes-dir", default=None)
-    p.add_argument("--output-dir", required=True)
+    p.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory for weekly_review.md and JSON outputs (default: research.weekly_review_output_dir)",
+    )
     p.add_argument("--start-date", default=None)
     p.add_argument("--end-date", default=None)
     p.add_argument("--lookback-days", type=int, default=None)
     p.add_argument("--config", default=None)
     p.add_argument("--with-llm-summary", action="store_true")
     args = p.parse_args()
+    cfg = _load_config(args.config)
+    try:
+        archive_dir, output_dir = resolve_weekly_review_dirs(cfg, args.archive_dir, args.output_dir)
+    except ValueError as e:
+        p.error(str(e))
     paths = run_weekly_review(
-        archive_dir=args.archive_dir,
+        archive_dir=archive_dir,
         candles_dir=args.candles_dir,
         outcomes_dir=args.outcomes_dir,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         start_date=args.start_date,
         end_date=args.end_date,
         lookback_days=args.lookback_days,
