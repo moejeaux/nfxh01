@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, Mock, patch
 from datetime import datetime, timezone
@@ -344,3 +345,164 @@ def test_update_position_prices_missing_coin(engine, sample_position):
     position = engine._open_positions[0]
     assert position.current_price == original_price
     assert position.unrealized_pnl_usd == 0.0
+
+
+@pytest.mark.asyncio
+async def test_topk_disabled_no_background_task_and_deterministic_path_unchanged(engine, sample_signal):
+    engine._config["intelligence"] = {
+        "enabled": True,
+        "topk_review": {
+            "enabled": False,
+            "top_k": 5,
+            "advisory_only": True,
+            "write_artifacts": False,
+        },
+    }
+    entry_mock = Mock()
+    entry_mock.should_enter.return_value = sample_signal
+    engine._entry_manager = entry_mock
+
+    scanner_mock = Mock()
+    scanner_mock.scan.return_value = [
+        AltCandidate(
+            coin="DOGE",
+            weakness_score=0.5,
+            relative_strength_1h=-0.02,
+            momentum_score=-0.1,
+            volume_ratio=1.2,
+            current_price=0.08,
+            timestamp=datetime.now(timezone.utc),
+        )
+    ]
+    engine._scanner = scanner_mock
+    exit_mock = Mock()
+    exit_mock.check_exits.return_value = []
+    engine._exit_manager = exit_mock
+
+    with patch("src.engines.acevault.engine.asyncio.create_task") as create_task_spy, \
+         patch.object(engine, "_fetch_market_data", return_value={}), \
+         patch.object(engine, "_fetch_current_prices", return_value={}):
+        out = await engine.run_cycle()
+
+    create_task_spy.assert_not_called()
+    engine.degen_executor.submit_trade.assert_called_once()
+    req = engine.degen_executor.submit_trade.call_args[0][0]
+    assert req.coin == "DOGE"
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_topk_gating_prevents_unnecessary_calls(engine, sample_signal):
+    engine._config["intelligence"] = {
+        "enabled": True,
+        "topk_review": {
+            "enabled": True,
+            "top_k": 5,
+            "advisory_only": True,
+            "write_artifacts": False,
+            "invoke_when": {
+                "score_gap_below": 0.01,  # strict: skip for large separation
+                "max_calls_per_cycle": 1,
+            },
+        },
+    }
+    entry_mock = Mock()
+    entry_mock.should_enter.return_value = sample_signal
+    engine._entry_manager = entry_mock
+
+    scanner_mock = Mock()
+    scanner_mock.scan.return_value = [
+        AltCandidate(
+            coin="DOGE",
+            weakness_score=2.0,
+            relative_strength_1h=-0.02,
+            momentum_score=-0.1,
+            volume_ratio=1.2,
+            current_price=0.08,
+            timestamp=datetime.now(timezone.utc),
+        ),
+        AltCandidate(
+            coin="ARB",
+            weakness_score=0.1,
+            relative_strength_1h=-0.02,
+            momentum_score=-0.1,
+            volume_ratio=1.2,
+            current_price=0.08,
+            timestamp=datetime.now(timezone.utc),
+        ),
+    ]
+    engine._scanner = scanner_mock
+    exit_mock = Mock()
+    exit_mock.check_exits.return_value = []
+    engine._exit_manager = exit_mock
+
+    with patch("src.engines.acevault.engine.asyncio.create_task") as create_task_spy, \
+         patch.object(engine, "_fetch_market_data", return_value={}), \
+         patch.object(engine, "_fetch_current_prices", return_value={}):
+        await engine.run_cycle()
+
+    create_task_spy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_topk_task_exception_logging_path(engine, caplog):
+    caplog.set_level("ERROR")
+
+    async def _boom():
+        raise RuntimeError("background boom")
+
+    engine._spawn_topk_review_task(
+        _boom(),
+        cycle_id="cycle-x",
+        cycle_timestamp="2026-04-19T00:00:00+00:00",
+        symbols=["DOGE"],
+        trace_ids=["trace-x"],
+    )
+    await asyncio.sleep(0.01)
+
+    assert "RISK_TOPK_REVIEW_TASK_EXCEPTION" in caplog.text
+    assert "background boom" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_deterministic_path_unchanged_after_topk_advisory_failure(engine, sample_signal):
+    engine._config["intelligence"] = {
+        "enabled": True,
+        "topk_review": {
+            "enabled": True,
+            "top_k": 5,
+            "advisory_only": True,
+            "write_artifacts": False,
+            "invoke_when": {"score_gap_below": 999.0, "max_calls_per_cycle": 1},
+        },
+    }
+    entry_mock = Mock()
+    entry_mock.should_enter.return_value = sample_signal
+    engine._entry_manager = entry_mock
+    scanner_mock = Mock()
+    scanner_mock.scan.return_value = [
+        AltCandidate(
+            coin="DOGE",
+            weakness_score=0.5,
+            relative_strength_1h=-0.02,
+            momentum_score=-0.1,
+            volume_ratio=1.2,
+            current_price=0.08,
+            timestamp=datetime.now(timezone.utc),
+        )
+    ]
+    engine._scanner = scanner_mock
+    exit_mock = Mock()
+    exit_mock.check_exits.return_value = []
+    engine._exit_manager = exit_mock
+
+    with patch("src.engines.acevault.engine.run_topk_advisory_review", side_effect=RuntimeError("llm down")), \
+         patch.object(engine, "_fetch_market_data", return_value={}), \
+         patch.object(engine, "_fetch_current_prices", return_value={}):
+        out = await engine.run_cycle()
+        await asyncio.sleep(0.01)
+
+    engine.degen_executor.submit_trade.assert_called_once()
+    req = engine.degen_executor.submit_trade.call_args[0][0]
+    assert req.coin == "DOGE"
+    assert len(out) == 1

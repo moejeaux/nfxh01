@@ -187,6 +187,7 @@ class TestBuildContext:
             "track_exit_engine",
             "tick_interval_seconds",
             "universe_manager",
+            "meta_holder",
         }
         assert set(ctx.keys()) == expected_keys
 

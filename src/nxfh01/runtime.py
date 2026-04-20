@@ -29,6 +29,7 @@ from src.market.btc_context_engine import BTCMarketContextEngine
 from src.market.btc_context_holder import BTCMarketContextHolder
 from src.market.cascade_forecaster import CascadeForecaster
 from src.market.cascade_risk import CascadeRiskHolder
+from src.market_context.hl_meta_snapshot import HLMetaSnapshotHolder
 from src.market_data.hl_rate_limited_info import RateLimitedInfo
 from src.market_universe.top25_universe import Top25UniverseManager
 from src.regime.detector import RegimeDetector
@@ -144,6 +145,10 @@ async def build_context(config: dict) -> dict:
 
     hl_client = await init_hl_client(config)
 
+    meta_holder = HLMetaSnapshotHolder(hl_client, config)
+    if bool((config.get("opportunity") or {}).get("enabled", False)):
+        meta_holder.refresh()
+
     universe_manager: Top25UniverseManager | None = None
     ucfg = config.get("universe") or {}
     if bool(ucfg.get("enabled", False)):
@@ -210,6 +215,7 @@ async def build_context(config: dict) -> dict:
         kill_switch=kill_switch,
         journal=journal,
         fathom_advisor=fathom_advisor,
+        meta_holder=meta_holder,
     )
 
     growi_engine = GrowiHFEngine(
@@ -218,6 +224,7 @@ async def build_context(config: dict) -> dict:
         regime_detector,
         kill_switch,
         portfolio_state,
+        meta_holder=meta_holder,
     )
     mc_engine = MCRecoveryEngine(
         config,
@@ -225,6 +232,7 @@ async def build_context(config: dict) -> dict:
         regime_detector,
         kill_switch,
         portfolio_state,
+        meta_holder=meta_holder,
     )
     btc_lanes_engine = BTCLanesEngine(
         config,
@@ -273,6 +281,7 @@ async def build_context(config: dict) -> dict:
         cascade_forecaster=cascade_forecaster,
         cascade_risk_holder=cascade_risk_holder,
         universe_manager=universe_manager,
+        meta_holder=meta_holder,
     )
 
     tick_interval = float(
@@ -304,4 +313,5 @@ async def build_context(config: dict) -> dict:
         "track_exit_engine": track_exit_engine,
         "tick_interval_seconds": tick_interval,
         "universe_manager": universe_manager,
+        "meta_holder": meta_holder,
     }

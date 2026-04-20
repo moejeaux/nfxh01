@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import uuid
@@ -9,11 +10,25 @@ from typing import Any
 from src.acp.degen_claw import AcpCloseRequest, AcpTradeRequest
 from src.engines.acevault.entry import EntryManager
 from src.engines.acevault.exit import AceExit, ExitManager
-from src.engines.acevault.models import AcePosition, AceSignal
+from src.engines.acevault.models import AcePosition, AceSignal, AltCandidate
 from src.nxfh01.funding_context import enrich_funding_context as enrich_fc
 from src.engines.acevault.scanner import AltScanner
+from src.opportunity.alpha_normalize import normalize_engine_alpha
+from src.opportunity.config_helpers import (
+    opportunity_enabled,
+    opportunity_enforce_ranking,
+    opportunity_shadow_mode,
+)
+from src.opportunity.leverage_policy import (
+    apply_portfolio_leverage_caps,
+    propose_leverage,
+)
+from src.opportunity.ranker import log_rank_line, rank_opportunity
+from src.calibration.opportunity_outcomes import get_outcome_store
+from src.calibration.schema import CandidateRankRecord, utc_iso_now
+from src.intelligence.topk_review import run_topk_advisory_review
 from src.regime.detector import RegimeDetector
-from src.regime.models import RegimeType
+from src.regime.models import RegimeState, RegimeType
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +44,7 @@ class AceVaultEngine:
         kill_switch: Any = None,
         journal: Any = None,
         fathom_advisor: Any = None,
+        meta_holder: Any | None = None,
     ) -> None:
         self._config = config
         self._hl_client = hl_client
@@ -38,12 +54,307 @@ class AceVaultEngine:
         self._kill_switch = kill_switch
         self._journal = journal
         self._fathom_advisor = fathom_advisor
+        self._meta_holder = meta_holder
 
         self._open_positions: list[AcePosition] = []
         self._cycle_running: bool = False
-        self._scanner = AltScanner(config, hl_client)
+        self._scanner = AltScanner(config, hl_client, meta_holder=meta_holder)
         self._entry_manager = EntryManager(config, risk_layer.portfolio_state)
         self._exit_manager = ExitManager(config)
+        self._topk_review_calls_this_cycle = 0
+        self._topk_review_call_times: list[datetime] = []
+
+    def _acevault_opportunity_rows(
+        self,
+        candidates: list[AltCandidate],
+        regime_state: RegimeState,
+    ) -> list[tuple[AltCandidate, dict[str, Any]]]:
+        """Trim/sort candidates using shared ranker; metadata for audit and sizing."""
+        max_cand = int(self._config["acevault"]["max_candidates"])
+        if not opportunity_enabled(self._config):
+            out = sorted(candidates, key=lambda c: c.weakness_score, reverse=True)[:max_cand]
+            return [(c, {}) for c in out]
+
+        min_submit = float(
+            ((self._config.get("opportunity") or {}).get("final_score") or {}).get(
+                "min_submit_score", 0.0
+            )
+        )
+        shadow = opportunity_shadow_mode(self._config)
+        enforce = opportunity_enforce_ranking(self._config)
+        rows: list[tuple[float, AltCandidate, dict[str, Any]]] = []
+        outcome_store = get_outcome_store(self._config)
+        for c in candidates:
+            trace_id = str(uuid.uuid4())
+            alpha, aud = normalize_engine_alpha(
+                "acevault",
+                c.weakness_score,
+                side="short",
+                cfg=self._config,
+            )
+            row = self._meta_holder.get_row(c.coin) if self._meta_holder else None
+            res = rank_opportunity(
+                engine_id="acevault",
+                regime_value=regime_state.regime.value,
+                side="short",
+                signal_alpha=alpha,
+                row=row,
+                cfg=self._config,
+            )
+            log_rank_line(
+                engine_id="acevault",
+                coin=c.coin,
+                res=res,
+                shadow=shadow,
+            )
+            meta = {
+                "symbol": c.coin,
+                "engine": "acevault",
+                "raw_score": float(c.weakness_score),
+                "opportunity_trace_id": trace_id,
+                "signal_alpha": res.signal_alpha,
+                "liq_mult": res.liq_mult,
+                "regime_mult": res.regime_mult,
+                "cost_mult": res.cost_mult,
+                "final_score": res.final_score,
+                "market_tier": res.market_tier,
+                "hard_reject": res.hard_reject,
+                "hard_reject_reason": res.hard_reject_reason,
+                "funding": float(row.funding) if row is not None else 0.0,
+                "premium": float(row.premium) if row is not None and row.premium is not None else 0.0,
+                "impact_proxy": (
+                    float(row.impact_pxs[0] - row.impact_pxs[1]) if row is not None and len(row.impact_pxs) >= 2 else 0.0
+                ),
+                "volume_band": "high" if row is not None and row.day_ntl_vlm >= 5_000_000 else "standard",
+                "open_interest_band": (
+                    "high"
+                    if row is not None and (row.open_interest * max(row.mark_px or row.mid_px or 0.0, 0.0)) >= 2_000_000
+                    else "standard"
+                ),
+                "regime_summary": regime_state.regime.value,
+                "alpha_audit": aud,
+            }
+            submit_eligible = (not res.hard_reject) and (res.final_score >= min_submit)
+            if shadow or not enforce:
+                rows.append((c.weakness_score, c, meta))
+            else:
+                if res.hard_reject:
+                    submit_eligible = False
+                    logger.info(
+                        "ACEVAULT_OPPORTUNITY_DROP coin=%s reason=%s",
+                        c.coin,
+                        res.hard_reject_reason,
+                    )
+                elif res.final_score < min_submit:
+                    submit_eligible = False
+                    logger.info(
+                        "ACEVAULT_OPPORTUNITY_DROP coin=%s reason=below_min_submit_score "
+                        "final=%.4f min=%.4f",
+                        c.coin,
+                        res.final_score,
+                        min_submit,
+                    )
+                else:
+                    max_lv = int(row.max_leverage) if row is not None and row.max_leverage > 0 else 1
+                    lev = propose_leverage(
+                        market_tier=res.market_tier,
+                        final_score=res.final_score,
+                        asset_max_leverage=max_lv,
+                        cfg=self._config,
+                    )
+                    lev = apply_portfolio_leverage_caps(
+                        portfolio_state=self.risk_layer.portfolio_state,
+                        engine_id="acevault",
+                        coin=c.coin,
+                        proposed=lev,
+                        new_notional_usd=float(self._config["acevault"].get("default_position_size_usd", 25)),
+                        cfg=self._config,
+                    )
+                    meta["leverage_proposal"] = lev
+                    rows.append((res.final_score, c, meta))
+            if outcome_store is not None:
+                outcome_store.record_candidate(
+                    CandidateRankRecord(
+                        timestamp=utc_iso_now(),
+                        trace_id=trace_id,
+                        symbol=c.coin,
+                        engine_id="acevault",
+                        strategy_key="acevault",
+                        side="short",
+                        regime_value=regime_state.regime.value,
+                        raw_strategy_score=float(c.weakness_score),
+                        signal_alpha=float(res.signal_alpha),
+                        liq_mult=float(res.liq_mult),
+                        regime_mult=float(res.regime_mult),
+                        cost_mult=float(res.cost_mult),
+                        final_score=float(res.final_score),
+                        market_tier=int(res.market_tier),
+                        leverage_proposal=int(meta.get("leverage_proposal", 1)),
+                        asset_max_leverage=int(row.max_leverage) if row is not None else 1,
+                        hard_reject=bool(res.hard_reject),
+                        hard_reject_reason=res.hard_reject_reason,
+                        submit_eligible=bool(submit_eligible),
+                        position_size_usd=float(self._config["acevault"].get("default_position_size_usd", 25)),
+                        metadata={"alpha_audit": aud},
+                    )
+                )
+            if enforce and not shadow and not submit_eligible:
+                continue
+
+        rows.sort(key=lambda t: -t[0])
+        trimmed = rows[:max_cand]
+        return [(c, m) for _, c, m in trimmed]
+
+    def _build_topk_review_candidates(
+        self,
+        ranked: list[tuple[AltCandidate, dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for idx, (candidate, meta) in enumerate(ranked, start=1):
+            payload = dict(meta)
+            payload["current_rank"] = idx
+            payload["symbol"] = candidate.coin
+            payload["engine"] = "acevault"
+            payload.setdefault("raw_score", float(candidate.weakness_score))
+            out.append(payload)
+        return out
+
+    def _launch_topk_review_background(self, ranked: list[tuple[AltCandidate, dict[str, Any]]]) -> None:
+        intelligence = self._config.get("intelligence") or {}
+        topk_cfg = ((self._config.get("intelligence") or {}).get("topk_review") or {})
+        if not bool(intelligence.get("enabled", False)):
+            return
+        if not bool(topk_cfg.get("enabled", False)):
+            return
+        cycle_id = str(uuid.uuid4())[:12]
+        cycle_ts = datetime.now(timezone.utc).isoformat()
+        candidates = self._build_topk_review_candidates(ranked)
+        if not candidates:
+            return
+        should_invoke, reason = self._should_invoke_topk_review(candidates, topk_cfg)
+        if not should_invoke:
+            logger.info(
+                "RISK_TOPK_REVIEW_SKIPPED engine=acevault cycle_id=%s reason=%s symbols=%s",
+                cycle_id,
+                reason,
+                ",".join(str(x.get("symbol", "")) for x in candidates),
+            )
+            return
+        trace_ids = [
+            str(c.get("opportunity_trace_id"))
+            for c in candidates
+            if c.get("opportunity_trace_id") is not None
+        ]
+        symbols = [str(c.get("symbol", "")) for c in candidates]
+
+        async def _runner() -> None:
+            result = await asyncio.to_thread(
+                run_topk_advisory_review,
+                candidates=candidates,
+                config=self._config,
+                artifact_dir=None,
+                engine="acevault",
+                trace_id=trace_ids[0] if trace_ids else None,
+                cycle_id=cycle_id,
+                event_timestamp=cycle_ts,
+            )
+            if not result.get("enabled"):
+                return
+            logger.info(
+                "RISK_TOPK_REVIEW_RESULT engine=acevault cycle_id=%s trace_id=%s status=%s review_status=%s "
+                "top_choice=%s confidence=%s flags=%s symbols=%s",
+                cycle_id,
+                trace_ids[0] if trace_ids else "",
+                result.get("status"),
+                result.get("llm_review_status"),
+                result.get("llm_top_choice"),
+                result.get("llm_confidence"),
+                ",".join(result.get("llm_caution_flags") or []),
+                ",".join(symbols),
+            )
+
+        self._spawn_topk_review_task(
+            _runner(),
+            cycle_id=cycle_id,
+            cycle_timestamp=cycle_ts,
+            symbols=symbols,
+            trace_ids=trace_ids,
+        )
+
+    def _spawn_topk_review_task(
+        self,
+        coro: Any,
+        *,
+        cycle_id: str,
+        cycle_timestamp: str,
+        symbols: list[str],
+        trace_ids: list[str],
+    ) -> None:
+        task = asyncio.create_task(coro)
+
+        def _on_done(done_task: asyncio.Task[Any]) -> None:
+            try:
+                done_task.result()
+            except Exception as exc:
+                logger.exception(
+                    "RISK_TOPK_REVIEW_TASK_EXCEPTION engine=acevault cycle_id=%s cycle_ts=%s trace_ids=%s "
+                    "symbols=%s error=%s",
+                    cycle_id,
+                    cycle_timestamp,
+                    ",".join(trace_ids),
+                    ",".join(symbols),
+                    exc,
+                )
+
+        task.add_done_callback(_on_done)
+
+    def _should_invoke_topk_review(
+        self,
+        candidates: list[dict[str, Any]],
+        topk_cfg: dict[str, Any],
+    ) -> tuple[bool, str]:
+        invoke_when = (topk_cfg.get("invoke_when") or {}) if isinstance(topk_cfg, dict) else {}
+        max_calls_per_cycle = int(invoke_when.get("max_calls_per_cycle", 1))
+        if self._topk_review_calls_this_cycle >= max(1, max_calls_per_cycle):
+            return False, "max_calls_per_cycle"
+
+        max_calls_per_hour_raw = invoke_when.get("max_calls_per_hour")
+        if max_calls_per_hour_raw is not None:
+            max_calls_per_hour = int(max_calls_per_hour_raw)
+            now = datetime.now(timezone.utc)
+            self._topk_review_call_times = [
+                t for t in self._topk_review_call_times if (now - t).total_seconds() < 3600.0
+            ]
+            if len(self._topk_review_call_times) >= max(1, max_calls_per_hour):
+                return False, "max_calls_per_hour"
+
+        min_lev_raw = invoke_when.get("min_leverage_proposal")
+        if min_lev_raw is not None:
+            min_lev = int(min_lev_raw)
+            if not any(int(c.get("leverage_proposal", 0) or 0) >= min_lev for c in candidates):
+                return False, "min_leverage_proposal"
+
+        if len(candidates) >= 2:
+            top = _as_float(candidates[0].get("final_score", candidates[0].get("raw_score", 0.0)))
+            nxt = _as_float(candidates[1].get("final_score", candidates[1].get("raw_score", 0.0)))
+            score_gap = abs(top - nxt)
+        else:
+            score_gap = 0.0
+
+        score_gap_below_raw = invoke_when.get("score_gap_below")
+        if score_gap_below_raw is not None:
+            score_gap_below = float(score_gap_below_raw)
+            if score_gap > score_gap_below:
+                return False, "score_gap_above_threshold"
+
+        if bool(invoke_when.get("low_confidence_only", False)):
+            low_confidence_gap = float(invoke_when.get("low_confidence_gap_threshold", 0.05))
+            if score_gap > low_confidence_gap:
+                return False, "low_confidence_only"
+
+        self._topk_review_calls_this_cycle += 1
+        self._topk_review_call_times.append(datetime.now(timezone.utc))
+        return True, "invoke"
 
     async def run_cycle(self) -> list[AceExit | AceSignal]:
         if self._cycle_running:
@@ -57,6 +368,7 @@ class AceVaultEngine:
             self._cycle_running = False
 
     async def _run_cycle_inner(self) -> list[AceExit | AceSignal]:
+        self._topk_review_calls_this_cycle = 0
         results: list[AceExit | AceSignal] = []
 
         market_data = await self._fetch_market_data()
@@ -164,12 +476,18 @@ class AceVaultEngine:
             logger.info("ACEVAULT_NO_CANDIDATES_THIS_CYCLE")
             return results
 
+        ranked = self._acevault_opportunity_rows(candidates, regime_state)
+        self._launch_topk_review_background(ranked)
+
         # --- pre-build signals and run Fathom concurrently for all candidates ---
         valid_signals: list[tuple[AceSignal, float]] = []
-        for candidate in candidates:
+        for candidate, opp_meta in ranked:
             signal = self._entry_manager.should_enter(candidate, regime_state, weight)
             if signal is None:
                 continue
+            lev = int(opp_meta.get("leverage_proposal", signal.leverage))
+            meta = dict(opp_meta) if opp_meta else {}
+            signal = dataclasses.replace(signal, leverage=max(1, lev), metadata=meta)
             enriched = enrich_fc(candidate.coin, dataclasses.asdict(signal))
             signal = dataclasses.replace(
                 signal,
@@ -230,8 +548,7 @@ class AceVaultEngine:
                         "source": "deterministic",
                     }
 
-            import asyncio as _asyncio
-            fathom_results = await _asyncio.gather(
+            fathom_results = await asyncio.gather(
                 *[_get_advice(s) for s, _ in valid_signals]
             )
             fathom_map = {s.coin: r for (s, _), r in zip(valid_signals, fathom_results)}
@@ -272,7 +589,7 @@ class AceVaultEngine:
                     coin=signal.coin,
                     side=signal.side,
                     size_usd=float(signal.position_size_usd),
-                    leverage=1,
+                    leverage=max(1, int(getattr(signal, "leverage", 1))),
                     order_type="market",
                     stop_loss=signal.stop_loss_price,
                     take_profit=signal.take_profit_price,
@@ -367,3 +684,10 @@ class AceVaultEngine:
         except Exception as e:
             logger.warning("ACEVAULT_PRICE_FETCH_FAILED error=%s", e)
             return {}
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default

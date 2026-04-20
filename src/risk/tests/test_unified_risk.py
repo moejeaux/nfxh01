@@ -349,3 +349,67 @@ class TestTop25UniverseGate:
         assert r.approved is False
         assert r.reason == "outside_top25_universe"
         mgr.can_open.assert_called_once_with("ZORK")
+
+
+class TestOpportunityUniverseInteraction:
+    def test_opportunity_enabled_off_mode_skips_top25_gate(
+        self, portfolio_state, kill_switch
+    ):
+        mgr = MagicMock()
+        mgr.can_open.return_value = False
+        config = {
+            "risk": {
+                "total_capital_usd": 100000,
+                "max_portfolio_drawdown_24h": 0.99,
+                "max_gross_multiplier": 10.0,
+                "max_correlated_longs": 30,
+                "min_available_capital_usd": 1.0,
+            },
+            "universe": {
+                "enabled": True,
+                "block_new_entries_outside_universe": True,
+            },
+            "opportunity": {
+                "enabled": True,
+                "shadow_mode": False,
+                "emergency_universe": {"mode": "off"},
+            },
+        }
+        rl = UnifiedRiskLayer(
+            config, portfolio_state, kill_switch, universe_manager=mgr
+        )
+        sig = FakeSignal(coin="ZORK", side="long", position_size_usd=100.0)
+        r = rl.validate(sig, "growi")
+        assert r.approved is True
+        mgr.can_open.assert_not_called()
+
+    def test_strict_allowlist_restores_top25_gate(
+        self, portfolio_state, kill_switch
+    ):
+        mgr = MagicMock()
+        mgr.can_open.return_value = False
+        config = {
+            "risk": {
+                "total_capital_usd": 100000,
+                "max_portfolio_drawdown_24h": 0.99,
+                "max_gross_multiplier": 10.0,
+                "max_correlated_longs": 30,
+                "min_available_capital_usd": 1.0,
+            },
+            "universe": {
+                "enabled": True,
+                "block_new_entries_outside_universe": True,
+            },
+            "opportunity": {
+                "enabled": True,
+                "shadow_mode": False,
+                "emergency_universe": {"mode": "strict_allowlist"},
+            },
+        }
+        rl = UnifiedRiskLayer(
+            config, portfolio_state, kill_switch, universe_manager=mgr
+        )
+        sig = FakeSignal(coin="ZORK", side="long", position_size_usd=100.0)
+        r = rl.validate(sig, "growi")
+        assert r.approved is False
+        mgr.can_open.assert_called_once_with("ZORK")

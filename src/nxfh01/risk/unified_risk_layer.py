@@ -1,3 +1,14 @@
+"""Intent-layer risk surface for ``OrderIntent`` (nxfh01 contract pipeline).
+
+Validates structural and policy invariants on typed intents (for example AceVault
+stop distance and canonical stop price). This layer is intentionally narrower than
+the live portfolio gate in ``src.risk.unified_risk.UnifiedRiskLayer``, which runs at
+execution time against portfolio state, kill switch, and market context.
+
+Operators and developers must not treat a passing result here as equivalent to the
+portfolio ``validate(signal, engine_id)`` gate on the execution path.
+"""
+
 from __future__ import annotations
 
 from decimal import Decimal

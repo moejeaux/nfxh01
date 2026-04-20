@@ -18,6 +18,7 @@ class TrackARiskSignal:
     stop_loss_price: float = 0.0
     take_profit_price: float = 0.0
     strategy_key: str = ""
+    leverage: int = 1
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

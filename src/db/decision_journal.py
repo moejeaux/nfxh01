@@ -9,6 +9,8 @@ from src.engines.acevault.models import AceSignal
 from src.engines.acevault.exit import AceExit
 from src.exits.models import UniversalExit
 from src.nxfh01.orchestration.types import NormalizedEntryIntent
+from src.calibration.opportunity_outcomes import get_outcome_store
+from src.calibration.schema import TradeOutcomeRecord, utc_iso_now
 from src.retro.fee_estimation import (
     estimate_round_trip_fee_usd,
     exit_notional_from_entry,
@@ -35,6 +37,7 @@ class DecisionJournal:
         self._db_url = database_url
         self._pool = None  # asyncpg pool
         self._fee_taker_bps_per_side: float | None = None
+        self._outcome_store = None
 
     def is_connected(self) -> bool:
         return self._pool is not None
@@ -85,6 +88,7 @@ class DecisionJournal:
             max_s,
             self._fee_taker_bps_per_side if self._fee_taker_bps_per_side is not None else "None",
         )
+        self._outcome_store = get_outcome_store(config or {})
 
     async def log_entry(self, signal: AceSignal, fathom_result: dict | None = None) -> str:
         """Insert entry decision into acevault_decisions table, return UUID as string."""
@@ -128,6 +132,39 @@ class DecisionJournal:
             signal.regime_at_entry,
             fathom_override,
         )
+        trace_id = None
+        if isinstance(signal.metadata, dict):
+            trace_id = signal.metadata.get("opportunity_trace_id")
+        if self._outcome_store is not None:
+            self._outcome_store.record_trade_outcome(
+                TradeOutcomeRecord(
+                    timestamp=utc_iso_now(),
+                    trace_id=str(trace_id) if trace_id else None,
+                    position_id=decision_id,
+                    symbol=signal.coin.strip().upper(),
+                    engine_id="acevault",
+                    strategy_key="acevault",
+                    side=signal.side,
+                    submitted=True,
+                    entry_price=float(signal.entry_price),
+                    exit_price=None,
+                    position_size_usd=float(signal.position_size_usd),
+                    leverage_used=max(1, int(getattr(signal, "leverage", 1))),
+                    realized_pnl=None,
+                    fees=None,
+                    slippage_bps=None,
+                    realized_net_pnl=None,
+                    hold_time_seconds=None,
+                    market_tier=signal.metadata.get("market_tier") if isinstance(signal.metadata, dict) else None,
+                    signal_alpha=signal.metadata.get("signal_alpha") if isinstance(signal.metadata, dict) else None,
+                    liq_mult=signal.metadata.get("liq_mult") if isinstance(signal.metadata, dict) else None,
+                    regime_mult=signal.metadata.get("regime_mult") if isinstance(signal.metadata, dict) else None,
+                    cost_mult=signal.metadata.get("cost_mult") if isinstance(signal.metadata, dict) else None,
+                    final_score=signal.metadata.get("final_score") if isinstance(signal.metadata, dict) else None,
+                    leverage_proposal=signal.metadata.get("leverage_proposal") if isinstance(signal.metadata, dict) else None,
+                    metadata={"fathom_override": fathom_override, "fathom_size_mult": fathom_size_mult},
+                )
+            )
         return decision_id
 
     async def log_track_a_entry(
@@ -192,6 +229,37 @@ class DecisionJournal:
             intent.strategy_key,
             job_id,
         )
+        trace_id = meta.get("opportunity_trace_id")
+        if self._outcome_store is not None:
+            self._outcome_store.record_trade_outcome(
+                TradeOutcomeRecord(
+                    timestamp=utc_iso_now(),
+                    trace_id=str(trace_id) if trace_id else None,
+                    position_id=position_id,
+                    symbol=intent.coin.strip().upper(),
+                    engine_id=intent.engine_id,
+                    strategy_key=intent.strategy_key,
+                    side=intent.side,
+                    submitted=True,
+                    entry_price=float(entry_price),
+                    exit_price=None,
+                    position_size_usd=size_db,
+                    leverage_used=max(1, int(leverage_used)),
+                    realized_pnl=None,
+                    fees=None,
+                    slippage_bps=None,
+                    realized_net_pnl=None,
+                    hold_time_seconds=None,
+                    market_tier=meta.get("market_tier"),
+                    signal_alpha=meta.get("signal_alpha"),
+                    liq_mult=meta.get("liq_mult"),
+                    regime_mult=meta.get("regime_mult"),
+                    cost_mult=meta.get("cost_mult"),
+                    final_score=meta.get("final_score"),
+                    leverage_proposal=meta.get("leverage_proposal"),
+                    metadata={"job_id": job_id, "idempotency_key": idempotency_key},
+                )
+            )
         return rid
 
     async def log_track_a_exit(
@@ -251,6 +319,33 @@ class DecisionJournal:
             f"{capture_ratio:.4f}" if capture_ratio is not None else "None",
             f"{fee_paid_usd:.6f}" if fee_paid_usd is not None else "None",
         )
+        if self._outcome_store is not None:
+            self._outcome_store.record_trade_outcome(
+                TradeOutcomeRecord(
+                    timestamp=utc_iso_now(),
+                    trace_id=None,
+                    position_id=position_id,
+                    symbol=exit.coin.strip().upper(),
+                    engine_id=exit.engine_id,
+                    strategy_key=str(exit.engine_id),
+                    side="unknown",
+                    submitted=True,
+                    entry_price=exit.entry_price,
+                    exit_price=exit.exit_price,
+                    position_size_usd=exit.position_size_usd,
+                    leverage_used=None,
+                    realized_pnl=exit.pnl_usd,
+                    fees=fee_paid_usd,
+                    slippage_bps=None,
+                    realized_net_pnl=(float(exit.pnl_usd) - float(fee_paid_usd))
+                    if fee_paid_usd is not None
+                    else float(exit.pnl_usd),
+                    hold_time_seconds=exit.hold_duration_seconds,
+                    mfe_r=exit.peak_r_multiple,
+                    mae_r=None,
+                    metadata={"exit_reason": exit.exit_reason, "peak_r_capture_ratio": capture_ratio},
+                )
+            )
 
     async def log_exit(
         self, decision_id: str, exit: AceExit, regime_at_close: str
@@ -309,6 +404,37 @@ class DecisionJournal:
             f"{capture_ratio:.4f}" if capture_ratio is not None else "None",
             f"{fee_paid_usd:.6f}" if fee_paid_usd is not None else "None",
         )
+        if self._outcome_store is not None:
+            self._outcome_store.record_trade_outcome(
+                TradeOutcomeRecord(
+                    timestamp=utc_iso_now(),
+                    trace_id=None,
+                    position_id=decision_id,
+                    symbol=exit.coin.strip().upper(),
+                    engine_id="acevault",
+                    strategy_key="acevault",
+                    side="short",
+                    submitted=True,
+                    entry_price=exit.entry_price,
+                    exit_price=exit.exit_price,
+                    position_size_usd=exit.position_size_usd,
+                    leverage_used=None,
+                    realized_pnl=exit.pnl_usd,
+                    fees=fee_paid_usd,
+                    slippage_bps=None,
+                    realized_net_pnl=(float(exit.pnl_usd) - float(fee_paid_usd))
+                    if fee_paid_usd is not None
+                    else float(exit.pnl_usd),
+                    hold_time_seconds=exit.hold_duration_seconds,
+                    mfe_r=exit.peak_r_multiple,
+                    mae_r=None,
+                    metadata={
+                        "exit_reason": exit.exit_reason,
+                        "regime_at_close": regime_at_close,
+                        "peak_r_capture_ratio": capture_ratio,
+                    },
+                )
+            )
 
     async def get_similar_decisions(
         self, coin: str, regime: str, limit: int = 5

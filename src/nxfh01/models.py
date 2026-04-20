@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass
@@ -19,3 +20,5 @@ class AceSignal:
     predicted_rate: float = 0.0
     annualized_carry: float = 0.0
     funding_trend: str = "unknown"
+    leverage: int = 1
+    metadata: dict[str, Any] = field(default_factory=dict)

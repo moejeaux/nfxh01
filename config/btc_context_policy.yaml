@@ -7,7 +7,7 @@ btc_context_policy:
   enabled_for_portfolio_beta: true
   missing_context_treat_as_shock: true
   align:
-    conflict_veto: false
+    conflict_veto: true
     conflict_size_mult: 0.25
   shock:
     block_all_entries: true

@@ -1,3 +1,14 @@
+"""Live portfolio and execution-time risk gate (production).
+
+``UnifiedRiskLayer`` here consumes runtime signals plus ``PortfolioState``, kill
+switch, universe/BTC context, and related config. It is the path that must gate
+orders before execution alongside operational controls.
+
+Do not confuse this module with ``src.nxfh01.risk.unified_risk_layer``, which is a
+separate *intent-layer* validator over ``OrderIntent`` (structural invariants for
+the nxfh01 contract surface), not a substitute for this portfolio gate.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -63,26 +74,27 @@ class UnifiedRiskLayer:
             logger.warning("RISK_REJECTED engine=%s reason=%s", engine_id, reason)
             return RiskDecision(approved=False, reason=reason)
 
-        ucfg = self._config.get("universe") or {}
-        if bool(ucfg.get("enabled", False)) and bool(
-            ucfg.get("block_new_entries_outside_universe", True)
-        ):
-            if self._universe_manager is None:
-                logger.warning(
-                    "RISK_TOP25_MANAGER_MISSING engine=%s coin=%s",
-                    engine_id,
-                    getattr(signal, "coin", ""),
-                )
-                return RiskDecision(approved=False, reason="top25_manager_missing")
-            coin_raw = getattr(signal, "coin", "")
-            coin = coin_raw.strip() if isinstance(coin_raw, str) else ""
-            if not self._universe_manager.can_open(coin):
-                logger.warning(
-                    "RISK_TRADE_BLOCKED_OUTSIDE_TOP25_UNIVERSE engine=%s coin=%s",
-                    engine_id,
-                    coin or coin_raw,
-                )
-                return RiskDecision(approved=False, reason="outside_top25_universe")
+        if self._universe_risk_gate_active():
+            ucfg = self._config.get("universe") or {}
+            if bool(ucfg.get("enabled", False)) and bool(
+                ucfg.get("block_new_entries_outside_universe", True)
+            ):
+                if self._universe_manager is None:
+                    logger.warning(
+                        "RISK_TOP25_MANAGER_MISSING engine=%s coin=%s",
+                        engine_id,
+                        getattr(signal, "coin", ""),
+                    )
+                    return RiskDecision(approved=False, reason="top25_manager_missing")
+                coin_raw = getattr(signal, "coin", "")
+                coin = coin_raw.strip() if isinstance(coin_raw, str) else ""
+                if not self._universe_manager.can_open(coin):
+                    logger.warning(
+                        "RISK_TRADE_BLOCKED_OUTSIDE_TOP25_UNIVERSE engine=%s coin=%s",
+                        engine_id,
+                        coin or coin_raw,
+                    )
+                    return RiskDecision(approved=False, reason="outside_top25_universe")
 
         try:
             base_size = float(signal.position_size_usd)
@@ -127,8 +139,12 @@ class UnifiedRiskLayer:
         dd = self._portfolio_state.get_portfolio_drawdown_24h()
         max_dd = self._risk_cfg.get("max_portfolio_drawdown_24h", 0.05)
         if dd >= max_dd:
-            reason = f"portfolio_dd_breach dd={dd:.4f} max={max_dd:.4f}"
-            logger.warning("RISK_REJECTED engine=%s reason=%s", engine_id, reason)
+            logger.warning(
+                "RISK_REJECTED engine=%s reason=portfolio_dd_breach dd=%.4f max=%.4f",
+                engine_id,
+                dd,
+                max_dd,
+            )
             return RiskDecision(approved=False, reason="portfolio_dd_breach")
 
         total_capital = self._risk_cfg.get("total_capital_usd", 10000)
@@ -161,6 +177,22 @@ class UnifiedRiskLayer:
             engine_id, signal.coin, signal.side, signal.position_size_usd,
         )
         return RiskDecision(approved=True, reason="approved")
+
+    def _universe_risk_gate_active(self) -> bool:
+        """Legacy ``universe.enabled`` gate, unless opportunity mode relaxes it."""
+        from src.opportunity.config_helpers import (
+            emergency_universe_mode,
+            opportunity_enabled,
+        )
+
+        ucfg = self._config.get("universe") or {}
+        if not bool(ucfg.get("enabled", False)):
+            return False
+        if not bool(ucfg.get("block_new_entries_outside_universe", True)):
+            return False
+        if opportunity_enabled(self._config):
+            return emergency_universe_mode(self._config) == "strict_allowlist"
+        return True
 
     def _btc_market_overlay(self, signal: Any, engine_id: str) -> RiskDecision | None:
         pol = self._config.get("btc_context_policy") or {}

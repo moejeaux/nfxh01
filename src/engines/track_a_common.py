@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
 EXCLUDED_COINS = frozenset({"BTC", "ETH", "SOL"})
+
+
+def perp_symbols_from_mids(mids: Mapping[str, Any]) -> list[str]:
+    """All tradable perp symbols from a mids map (unordered)."""
+    out: list[str] = []
+    for coin in mids:
+        if coin in EXCLUDED_COINS:
+            continue
+        if "/" in coin or str(coin).startswith("@"):
+            continue
+        out.append(str(coin))
+    return out
 
 
 def list_perp_coins(

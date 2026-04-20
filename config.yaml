@@ -21,6 +21,117 @@ universe:
   block_new_entries_outside_universe: true
   allow_exit_management_outside_universe: true
 
+# Shared market-aware opportunity pipeline (AceVault, Growi HF, MC Recovery).
+# When ``enabled: true`` and ``shadow_mode: false``, Top-25 is no longer the primary gate:
+# use ``emergency_universe.mode: strict_allowlist`` to re-enable allowlist blocking at risk layer.
+opportunity:
+  enabled: false
+  shadow_mode: false
+  context_refresh_seconds: 15
+  require_valid_snapshot: true
+  acevault_rank_pool_size: 24
+  emergency_universe:
+    mode: off
+  alpha:
+    acevault:
+      min_raw: 0.0
+      max_raw: 2.5
+    growi_hf:
+      min_raw: 0.0
+      max_raw: 50.0
+    mc_recovery:
+      min_raw: 0.0
+      max_raw: 80.0
+  hard_reject:
+    min_day_ntl_vlm_usd: 150000
+    min_open_interest_usd: 75000
+    require_mid_px: true
+    require_impact_pxs: true
+    max_half_spread_pct: 0.85
+    max_abs_funding: 0.00195
+    max_abs_premium_pct: 2.8
+    reject_only_isolated: false
+  liquidity:
+    vlm_ref_usd: 5000000
+    oi_ref_usd: 2000000
+    impact_k: 10.0
+    min_liq_mult: 0.06
+    weights:
+      volume: 0.55
+      open_interest: 0.45
+  regime:
+    default_mult: 1.0
+    by_engine:
+      acevault:
+        trending: 1.05
+        ranging: 0.95
+        panic: 0.85
+      growi:
+        trending: 1.0
+        ranging: 1.08
+        panic: 0.92
+      mc:
+        trending: 0.98
+        ranging: 1.0
+        panic: 1.02
+  cost:
+    impact_k: 12.0
+    funding_k: 5200.0
+    premium_k: 0.22
+    min_cost_mult: 0.02
+    floors:
+      impact: 0.00012
+      funding: 0.0
+      premium: 0.0
+  final_score:
+    min_submit_score: 0.12
+    top_k_per_cycle: 12
+  tiering:
+    tier1_min_liq_mult: 1.0
+    tier2_min_liq_mult: 0.42
+  leverage:
+    enabled: true
+    top_target_x: 10.0
+    tier_caps:
+      tier1: 10.0
+      tier2: 5.0
+      tier3: 0.0
+    confidence_bands:
+      elite_min_score: 0.62
+      strong_min_score: 0.36
+      medium_min_score: 0.2
+    by_band:
+      "1":
+        elite: 10.0
+        strong: 7.0
+        medium: 4.5
+        weak: 1.0
+      "2":
+        elite: 5.0
+        strong: 3.5
+        medium: 2.0
+        weak: 1.0
+    portfolio_caps:
+      high_leverage_threshold_x: 5
+      max_high_leverage_positions: 3
+      max_high_leverage_gross_usd: 28000.0
+
+research:
+  enabled: true
+  data_dir: "data/research"
+  save_candidate_logs: true
+  save_trade_outcomes: true
+
+calibration:
+  enabled: true
+  recompute_mode: recommend_only
+  min_trades_for_update: 75
+  lookback_days: 45
+  target_metrics:
+    - realized_net_pnl
+    - profit_factor
+    - slippage_adjusted_expectancy
+
 database:
   pool_min_size: 1
   pool_max_size: 4
@@ -175,6 +286,28 @@ fathom:
   acevault_min_mult: 0.90
   acevault_max_mult: 1.15
   majors_max_mult: 1.68
+
+intelligence:
+  enabled: false
+  provider: fathom
+  model: fathom-14b
+  timeout_seconds: 60
+  topk_review:
+    enabled: false
+    top_k: 5
+    advisory_only: true
+    write_artifacts: true
+    invoke_when:
+      score_gap_below: 0.08
+      min_leverage_proposal: 3
+      low_confidence_only: false
+      max_calls_per_cycle: 1
+      max_calls_per_hour: 60
+  weekly_summary:
+    enabled: true
+    max_recommendations: 2
+    require_structured_output: true
+    write_markdown: true
 
 # Unified retrospective service (shallow + deep); single scheduler, lock, registry pipeline.
 retro:

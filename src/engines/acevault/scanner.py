@@ -1,5 +1,4 @@
 import logging
-import random
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -7,6 +6,8 @@ from typing import Any
 import pandas as pd
 
 from src.engines.acevault.models import AltCandidate
+from src.opportunity.config_helpers import opportunity_enforce_ranking
+from src.opportunity.ordering import order_perp_symbols_for_evaluation
 from src.regime.indicators import compute_alt_btc_ratio, compute_volatility
 
 logger = logging.getLogger(__name__)
@@ -15,10 +16,26 @@ EXCLUDED_COINS = frozenset({"BTC", "ETH", "SOL"})
 
 
 class AltScanner:
-    def __init__(self, config: dict, hl_client: Any) -> None:
+    def __init__(
+        self,
+        config: dict,
+        hl_client: Any,
+        meta_holder: Any | None = None,
+    ) -> None:
         self.config = config
         self.hl_client = hl_client
+        self._meta_holder = meta_holder
         self._btc_df: pd.DataFrame | None = None
+
+    def _rank_pool_size(self, max_candidates: int) -> int:
+        opp = self.config.get("opportunity") or {}
+        raw = opp.get("acevault_rank_pool_size")
+        if raw is not None:
+            try:
+                return max(int(max_candidates), int(raw))
+            except (TypeError, ValueError):
+                pass
+        return max(int(max_candidates) * 4, 20)
 
     def scan(self) -> list[AltCandidate]:
         try:
@@ -55,19 +72,39 @@ class AltScanner:
             coin_list.append(coin)
 
         cap_raw = self.config["acevault"].get("max_coins_to_evaluate")
-        if cap_raw is not None:
-            try:
-                cap_i = int(cap_raw)
-            except (TypeError, ValueError):
-                cap_i = 0
-            universe_n = len(coin_list)
-            if cap_i > 0 and len(coin_list) > cap_i:
-                coin_list = random.sample(coin_list, cap_i)
-                logger.info(
-                    "ACEVAULT_SCAN_COIN_CAP universe=%d evaluating=%d",
-                    universe_n,
-                    cap_i,
-                )
+        try:
+            cap_i = int(cap_raw) if cap_raw is not None else 0
+        except (TypeError, ValueError):
+            cap_i = 0
+
+        snap_ok = bool(self._meta_holder and self._meta_holder.is_valid)
+        snap = self._meta_holder.snapshot_copy() if self._meta_holder else {}
+        if (
+            opportunity_enforce_ranking(self.config)
+            and bool((self.config.get("opportunity") or {}).get("require_valid_snapshot", True))
+            and self._meta_holder is not None
+            and not snap_ok
+        ):
+            logger.warning("ACEVAULT_SCAN_SKIPPED reason=meta_snapshot_invalid")
+            return []
+
+        if cap_i > 0 and len(coin_list) > cap_i:
+            ordered = order_perp_symbols_for_evaluation(
+                coin_list,
+                markets,
+                snap,
+                max_count=cap_i,
+                snapshot_valid=snap_ok,
+            )
+            coin_list = ordered
+            logger.info(
+                "ACEVAULT_SCAN_COIN_CAP universe=%d evaluating=%d ordered=market_aware",
+                len(coin_list) if cap_i <= 0 else len(markets),
+                len(coin_list),
+            )
+
+        max_candidates = int(self.config["acevault"]["max_candidates"])
+        pool = self._rank_pool_size(max_candidates)
 
         candidates: list[AltCandidate] = []
         for coin in coin_list:
@@ -86,12 +123,12 @@ class AltScanner:
             return []
 
         candidates.sort(key=lambda c: c.weakness_score, reverse=True)
-        max_candidates = self.config["acevault"]["max_candidates"]
-        top = candidates[:max_candidates]
+        top = candidates[:pool]
 
         logger.info(
-            "ACEVAULT_SCAN_COMPLETE candidates=%d top_coin=%s top_score=%.3f",
+            "ACEVAULT_SCAN_COMPLETE candidates=%d pool=%d top_weak_coin=%s top_weak=%.3f",
             len(top),
+            pool,
             top[0].coin,
             top[0].weakness_score,
         )

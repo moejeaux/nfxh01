@@ -92,6 +92,7 @@ class TrackAExecutor:
                 side=intent.side,
                 position_size_usd=float(intent.position_size_usd),
                 strategy_key=str(intent.strategy_key),
+                leverage=self._leverage_for(intent),
                 metadata=dict(intent.metadata or {}),
             )
             decision = self._risk_layer.validate(risk_signal, intent.engine_id)
@@ -117,6 +118,7 @@ class TrackAExecutor:
             sl = intent.stop_loss_price
             tp = intent.take_profit_price
             scaled_usd = float(risk_signal.position_size_usd)
+            lev = self._leverage_for(intent)
             proxy = TrackARiskSignal(
                 coin=intent.coin.strip(),
                 side=intent.side,
@@ -125,10 +127,9 @@ class TrackAExecutor:
                 stop_loss_price=float(sl) if sl is not None else 0.0,
                 take_profit_price=float(tp) if tp is not None else 0.0,
                 strategy_key=str(intent.strategy_key),
+                leverage=lev,
                 metadata=dict(intent.metadata or {}),
             )
-
-            lev = self._leverage_for(intent)
             pos_id = str(uuid.uuid4())
             try:
                 req = AcpTradeRequest(
