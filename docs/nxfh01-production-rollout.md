@@ -35,6 +35,7 @@ From the repository root (requires outbound HTTPS to Hyperliquid):
 
 ```bash
 python scripts/append_hl_meta_archive.py
+# Equivalent (repo root on ``sys.path``): ``python -m src.research.hl_meta_archive_append``
 ```
 
 Run periodically or via cron if you want a time series in `snap.jsonl`. For a one-off smoke, a single line is enough for `weekly_review` to run (historical depth will be thin until you accumulate more snapshots).

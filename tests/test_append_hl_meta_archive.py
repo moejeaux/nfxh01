@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,6 +35,20 @@ def test_append_hl_meta_snapshot_writes_line(tmp_path: Path) -> None:
     lines = dest.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0]) == fake
+
+
+def test_append_script_cli_help_importable_from_scripts_dir() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "append_hl_meta_archive.py"
+    r = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    assert "metaAndAssetCtxs" in r.stdout
 
 
 def test_append_hl_meta_archive_dir_cli_override(tmp_path: Path) -> None:
