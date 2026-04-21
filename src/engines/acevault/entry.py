@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.engines.acevault.models import AceSignal, AltCandidate
+from src.exits.policy_config import resolve_engine_exit_config
 from src.regime.models import RegimeState, RegimeType
 
 logger = logging.getLogger(__name__)
@@ -161,8 +162,10 @@ class EntryManager:
 
     def _build_signal(self, candidate: AltCandidate, regime: RegimeState) -> AceSignal:
         entry_price = candidate.current_price
-        sl_pct = float(self._acevault_cfg["stop_loss_distance_pct"]) / 100.0
-        tp_pct = float(self._acevault_cfg.get("take_profit_distance_pct", 2.7)) / 100.0
+        regime_key = regime.regime.value
+        resolved = resolve_engine_exit_config(self._config, "acevault", regime_key)
+        sl_pct = float(resolved.get("stop_loss_distance_pct") or self._acevault_cfg["stop_loss_distance_pct"]) / 100.0
+        tp_pct = float(resolved.get("take_profit_distance_pct") or self._acevault_cfg.get("take_profit_distance_pct", 2.7)) / 100.0
         stop_loss_price = entry_price * (1 + sl_pct)
         take_profit_price = entry_price * (1 - tp_pct)
         position_size_usd = self._acevault_cfg.get("default_position_size_usd", 100)

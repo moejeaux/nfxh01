@@ -444,3 +444,76 @@ def test_gate_reentry_allowed_after_cooldown_expires(
     em = EntryManager(mock_config, ps)
     result = em.should_enter(sample_candidate, sample_regime, 0.9)
     assert result is not None
+
+
+class TestRegimeSpecificTPOverride:
+    """AceVault entry TP distance must resolve from exit_overrides when entry regime matches."""
+
+    def _config_with_ranging_override(self) -> dict:
+        return {
+            "acevault": {
+                "min_weakness_score": 0.3,
+                "ranging_min_weakness_score": 0.45,
+                "min_volume_ratio": 0.8,
+                "stop_loss_distance_pct": 0.28,
+                "take_profit_distance_pct": 2.7,
+                "max_concurrent_positions": 5,
+                "default_position_size_usd": 100,
+                "exit_overrides": {
+                    "ranging": {
+                        "take_profit_distance_pct": 1.0,
+                    },
+                },
+            },
+            "strategies": {
+                "acevault": {"engine_id": "acevault"},
+            },
+        }
+
+    def test_ranging_entry_uses_overridden_tp_distance(self, mock_portfolio_state):
+        cfg = self._config_with_ranging_override()
+        em = EntryManager(cfg, mock_portfolio_state)
+        candidate = AltCandidate(
+            coin="SOL",
+            weakness_score=0.5,
+            relative_strength_1h=-0.02,
+            momentum_score=0.3,
+            volume_ratio=1.2,
+            current_price=100.0,
+            timestamp=datetime.now(timezone.utc),
+        )
+        regime = RegimeState(
+            regime=RegimeType.RANGING,
+            confidence=0.8,
+            timestamp=datetime.now(timezone.utc),
+            indicators_snapshot={},
+        )
+        signal = em.should_enter(candidate, regime, 0.6)
+        assert signal is not None
+        expected_tp = 100.0 * (1 - 1.0 / 100.0)
+        assert signal.take_profit_price == pytest.approx(expected_tp)
+        expected_sl = 100.0 * (1 + 0.28 / 100.0)
+        assert signal.stop_loss_price == pytest.approx(expected_sl)
+
+    def test_trending_down_entry_uses_default_tp_distance(self, mock_portfolio_state):
+        cfg = self._config_with_ranging_override()
+        em = EntryManager(cfg, mock_portfolio_state)
+        candidate = AltCandidate(
+            coin="SOL",
+            weakness_score=0.5,
+            relative_strength_1h=-0.02,
+            momentum_score=0.3,
+            volume_ratio=1.2,
+            current_price=100.0,
+            timestamp=datetime.now(timezone.utc),
+        )
+        regime = RegimeState(
+            regime=RegimeType.TRENDING_DOWN,
+            confidence=0.8,
+            timestamp=datetime.now(timezone.utc),
+            indicators_snapshot={},
+        )
+        signal = em.should_enter(candidate, regime, 0.9)
+        assert signal is not None
+        expected_tp = 100.0 * (1 - 2.7 / 100.0)
+        assert signal.take_profit_price == pytest.approx(expected_tp)

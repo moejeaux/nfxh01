@@ -227,7 +227,7 @@ class LiveExitEngine:
         if not root.get("enabled", True):
             return []
         sk = strategy_key or _strategy_key_from_engine(engine_id, self._config)
-        policy = resolve_exit_policy(self._config, sk)
+        policy_cache: dict[str | None, dict[str, Any]] = {}
         out: list[UniversalExit] = []
         for pos in positions:
             coin = getattr(pos.signal, "coin", "").strip()
@@ -240,6 +240,14 @@ class LiveExitEngine:
                 )
                 continue
             sig = pos.signal
+            entry_regime = getattr(sig, "regime_at_entry", None)
+            if isinstance(getattr(sig, "metadata", None), dict):
+                entry_regime = sig.metadata.get("regime_at_entry", entry_regime)
+            if entry_regime not in policy_cache:
+                policy_cache[entry_regime] = resolve_exit_policy(
+                    self._config, sk, regime=entry_regime
+                )
+            policy = policy_cache[entry_regime]
             side = _side_from_signal(sig)
             entry = float(getattr(sig, "entry_price", 0) or 0)
             sl = float(getattr(sig, "stop_loss_price", 0) or 0)

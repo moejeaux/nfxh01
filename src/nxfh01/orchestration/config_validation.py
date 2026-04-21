@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.exits.policy_config import validate_exit_policy_config
 from src.nxfh01.orchestration.strategy_registry import StrategyRegistry
 
 
@@ -23,6 +24,8 @@ def validate_multi_strategy_config(config: dict) -> None:
 
     Does not substitute business judgment for risk thresholds — only structural coherence.
     """
+    validate_exit_policy_config(config)
+
     orch = config.get("orchestration")
     if orch is None:
         return

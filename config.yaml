@@ -240,6 +240,29 @@ acevault:
   reentry_stop_loss_cooldown_candles: 10
   reentry_stop_loss_candle_interval_seconds: 60
   reentry_stop_loss_cooldown_seconds: null
+  # Regime-specific exit overrides merge on top of global ``exits`` defaults.
+  # Partial TP is capability-gated: setting enabled: true will fail validation
+  # until ACP/DegenClaw exposes a sized partial-close contract.
+  exit_overrides:
+    ranging:
+      take_profit_distance_pct: 1.0
+      break_even:
+        trigger_r: 0.9
+        offset_r: 0.10
+      partial_tp:
+        enabled: false
+        levels:
+          - trigger_r: 1.0
+            size_fraction: 0.60
+          - trigger_r: 2.0
+            size_fraction: 0.20
+      trailing:
+        enabled: true
+        activate_at_r: 1.25
+        distance_r: 0.9
+      time_stop:
+        minutes: 35
+        min_progress_r: 0.35
 
 growi_hf:
   default_position_size_usd: 20
@@ -389,6 +412,7 @@ exits:
     min_progress_r: 0.3
   partial_tp:
     enabled: false
+    levels: []
   trailing:
     enabled: true
     activate_at_r: 1.0
