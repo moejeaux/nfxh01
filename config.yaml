@@ -16,8 +16,8 @@ hyperliquid_api:
 
 execution:
   max_spread_bps: 12
-  max_slippage_bps: 15
-  max_total_round_trip_cost_bps: 35
+  max_slippage_bps: 12
+  max_total_round_trip_cost_bps: 32
   entry_fee_bps: 4
   exit_fee_bps: 4
   fallback_spread_bps: 10
@@ -227,13 +227,13 @@ acevault:
   max_coins_to_evaluate: 72
   default_position_size_usd: 25
   # Fixed distance from entry to stop (percent). Immutable after position creation; risk layer rejects widening.
-  # Tightened per Fathom retrospective (ranging-market loss cluster); stay at or below 0.3% ceiling.
-  stop_loss_distance_pct: 0.28
-  take_profit_distance_pct: 2.7
+  # Tuned from live trade outcomes; distance remains config-driven (risk layer enforces canonical stop geometry).
+  stop_loss_distance_pct: 0.35
+  take_profit_distance_pct: 3.0
   max_candidates: 5
-  min_weakness_score: 0.38
+  min_weakness_score: 0.44
   # Stricter weakness required when regime is ranging (range-aware entry).
-  ranging_min_weakness_score: 0.45
+  ranging_min_weakness_score: 0.50
   min_volume_ratio: 0.88
   max_concurrent_positions: 5
   max_hold_minutes: 240
@@ -245,8 +245,8 @@ acevault:
     ranging: 0.6
     risk_off: 1.0
   # Same-coin re-entry after AceVault stop_loss: block for cooldown window (acevault engine only).
-  # Precedence: if reentry_stop_loss_cooldown_seconds is a number, it wins; else candles × interval (default 10×60s=600s).
-  reentry_stop_loss_cooldown_candles: 10
+  # Precedence: if reentry_stop_loss_cooldown_seconds is a number, it wins; else candles × interval (default 15×60s=900s).
+  reentry_stop_loss_cooldown_candles: 15
   reentry_stop_loss_candle_interval_seconds: 60
   reentry_stop_loss_cooldown_seconds: null
   ranging_trade:
@@ -272,14 +272,14 @@ acevault:
   exit_overrides:
     ranging:
       take_profit_distance_pct: 1.0
-      breakeven_activation_R: 0.65
-      trailing_activation_R: 1.0
-      trailing_atr_multiple: 0.65
+      breakeven_activation_R: 0.55
+      trailing_activation_R: 0.8
+      trailing_atr_multiple: 0.6
       max_hold_bars_in_range: 10
-      hard_target_r_cap: 2.2
-      time_to_fail_bars_before_tighter_invalidation: 6
+      hard_target_r_cap: 2.0
+      time_to_fail_bars_before_tighter_invalidation: 5
       fail_fast:
-        max_progress_r: 0.15
+        max_progress_r: 0.12
       range_target:
         enabled: true
         buffer_frac_of_width: 0.02
@@ -296,11 +296,11 @@ acevault:
             size_fraction: 0.20
       trailing:
         enabled: true
-        activate_at_r: 1.25
-        distance_r: 0.9
+        activate_at_r: 1.0
+        distance_r: 0.75
       time_stop:
-        minutes: 35
-        min_progress_r: 0.35
+        minutes: 30
+        min_progress_r: 0.30
 
 growi_hf:
   default_position_size_usd: 20
@@ -411,8 +411,8 @@ retro:
   # Phase 2b: Worst-PF (profit factor) candidates for auto-disable advisor signal.
   # worst_pf_candidate_min_trades: only coins with >= N closed trades considered.
   # worst_pf_limit: top N worst-PF coins surfaced to advisor in prompt.
-  worst_pf_candidate_min_trades: 10
-  worst_pf_limit: 8
+  worst_pf_candidate_min_trades: 8
+  worst_pf_limit: 10
   telegram_notify: false
   telegram_message_max_chars: 3500
 
@@ -427,9 +427,9 @@ learning:
   inconclusive_timeout_days: 7
   evaluation_trade_checkpoints: [25, 50, 100]
   evaluation_max_closed_rows: 50000
-  improve_pf_ratio: 1.05
+  improve_pf_ratio: 1.02
   auto_apply_min_confidence: 0.75
-  revert_pf_worsen_ratio: 0.85
+  revert_pf_worsen_ratio: 0.9
   # reduce_fathom_acevault_max_mult: factor in (0,1) × current; never above floor.
   fathom_acevault_max_mult_floor: 1.0
   fathom_acevault_max_mult_reduce_factor_default: 0.9
@@ -442,19 +442,19 @@ exits:
     enabled: true
   break_even:
     enabled: true
-    trigger_r: 1.0
-    offset_r: 0.05
+    trigger_r: 0.8
+    offset_r: 0.04
   time_stop:
     enabled: true
-    minutes: 45
-    min_progress_r: 0.3
+    minutes: 40
+    min_progress_r: 0.25
   partial_tp:
     enabled: false
     levels: []
   trailing:
     enabled: true
-    activate_at_r: 1.0
-    distance_r: 0.75
+    activate_at_r: 0.8
+    distance_r: 0.65
 
 fathom_retrospective:
   enabled: true
@@ -551,7 +551,7 @@ risk:
   # Until last N closed AceVault trades meet PF + avg win/avg |loss| thresholds, scale entries by position_multiplier.
   safety_mode:
     enabled: true
-    position_multiplier: 0.5
-    min_closed_trades: 30
-    min_profit_factor_before_leaving_safety_mode: 1.02
-    min_avg_win_loss_ratio: 1.0
+    position_multiplier: 0.45
+    min_closed_trades: 40
+    min_profit_factor_before_leaving_safety_mode: 1.08
+    min_avg_win_loss_ratio: 1.1
