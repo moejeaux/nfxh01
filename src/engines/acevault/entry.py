@@ -7,6 +7,7 @@ from src.engines.acevault.acevault_metrics import incr_ranging_candidate, incr_r
 from src.engines.acevault.models import AceSignal, AltCandidate
 from src.exits.policy_config import resolve_engine_exit_config
 from src.regime.models import RegimeState, RegimeType
+from src.risk.position_sizer import PositionSizer
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ class EntryManager:
         self._config = config
         self._acevault_cfg = config["acevault"]
         self._portfolio_state = portfolio_state
+        self._position_sizer = PositionSizer(config)
         self._ranging_candidates_seen_this_cycle = 0
         self._ranging_candidates_blocked_by_structure_this_cycle = 0
 
@@ -369,6 +371,26 @@ class EntryManager:
             )
         return passed
 
+    def _safe_compute_position_size(self, entry_price: float, stop_loss_price: float, coin: str) -> float:
+        try:
+            equity_usd = float((self._config.get("risk") or {})["total_capital_usd"])
+            out = float(
+                self._position_sizer.compute_size_usd(entry_price, stop_loss_price, equity_usd)
+            )
+            return out
+        except Exception:
+            fb_raw = self._acevault_cfg.get("default_position_size_usd", 100)
+            try:
+                fb = float(fb_raw)
+            except (TypeError, ValueError):
+                fb = 100.0
+            logger.info(
+                "ACEVAULT_POSITION_SIZE_FALLBACK coin=%s size_usd=%s",
+                coin,
+                fb,
+            )
+            return fb
+
     def _build_signal(self, candidate: AltCandidate, regime: RegimeState) -> AceSignal:
         entry_price = candidate.current_price
         regime_key = regime.regime.value
@@ -395,7 +417,9 @@ class EntryManager:
             )
             band_tp = float(rl) + buf * width
             take_profit_price = max(take_profit_price, band_tp)
-        position_size_usd = self._acevault_cfg.get("default_position_size_usd", 100)
+        position_size_usd = self._safe_compute_position_size(
+            float(entry_price), float(stop_loss_price), candidate.coin
+        )
         meta = {
             "range_high": rh,
             "range_low": rl,

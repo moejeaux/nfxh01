@@ -25,6 +25,7 @@ __all__ = ["VERSION", "_log_startup_sequence", "build_context", "load_config", "
 async def main() -> None:
     config = load_config()
     ctx = await build_context(config)
+    # AceVault entry path: CostGuard and PositionSizer are owned by AceVaultEngine / EntryManager.
     _log_startup_sequence(ctx)
 
     orchestrator = ctx["orchestrator"]

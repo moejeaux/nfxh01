@@ -5,9 +5,11 @@ import dataclasses
 import logging
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 
 from src.acp.degen_claw import AcpCloseRequest, AcpTradeRequest
+from src.execution.cost_guard import CostGuard
 from src.engines.acevault.entry import EntryManager
 from src.engines.acevault.exit import AceExit, ExitManager
 from src.engines.acevault.models import AcePosition, AceSignal, AltCandidate
@@ -67,6 +69,14 @@ class AceVaultEngine:
         self._scanner = AltScanner(config, hl_client, meta_holder=meta_holder)
         self._entry_manager = EntryManager(config, risk_layer.portfolio_state)
         self._exit_manager = ExitManager(config)
+        self._cost_guard: CostGuard | None = None
+        if isinstance(self._config.get("execution"), dict):
+            self._cost_guard = CostGuard(
+                self._config,
+                SimpleNamespace(info=self._hl_client),
+            )
+        self._last_entry_metadata_by_coin: dict[str, dict[str, Any]] = {}
+        self._last_exit_metadata_by_position_id: dict[str, dict[str, Any]] = {}
         self._topk_review_calls_this_cycle = 0
         self._topk_review_call_times: list[datetime] = []
         self._metrics_cycle_counter = 0
@@ -434,6 +444,19 @@ class AceVaultEngine:
                     getattr(pos_match.signal, "regime_at_entry", ""),
                     meta.get("is_ranging_trade", False),
                 )
+            hook = self._last_entry_metadata_by_coin.get(exit.coin) if pos_match is not None else None
+            if hook and pos_match is not None:
+                rz = current_prices.get(exit.coin)
+                realized_px = (
+                    float(exit.exit_price)
+                    if getattr(exit, "exit_price", None) is not None
+                    else (float(rz) if rz is not None else None)
+                )
+                self._last_exit_metadata_by_position_id[exit.position_id] = {
+                    "expected_exit_price": float(pos_match.signal.take_profit_price),
+                    "realized_exit_price": realized_px,
+                    "gross_pnl_usd": float(exit.pnl_usd),
+                }
             try:
                 self.degen_executor.submit_close(
                     AcpCloseRequest(
@@ -447,10 +470,20 @@ class AceVaultEngine:
 
             if self._journal is not None:
                 try:
+                    xm = self._last_exit_metadata_by_position_id.pop(exit.position_id, None)
+                    log_kw: dict[str, Any] = {}
+                    if isinstance(xm, dict):
+                        if xm.get("expected_exit_price") is not None:
+                            log_kw["expected_exit_price"] = xm["expected_exit_price"]
+                        if xm.get("realized_exit_price") is not None:
+                            log_kw["realized_exit_price"] = xm["realized_exit_price"]
+                        if xm.get("gross_pnl_usd") is not None:
+                            log_kw["gross_pnl_usd"] = xm["gross_pnl_usd"]
                     await self._journal.log_exit(
                         decision_id=exit.position_id,
                         exit=exit,
                         regime_at_close=regime_state.regime.value,
+                        **log_kw,
                     )
                     logger.info(
                         "DECISION_JOURNAL_EXIT_LOGGED id=%s coin=%s pnl_pct=%.3f",
@@ -535,7 +568,9 @@ class AceVaultEngine:
             if signal is None:
                 continue
             lev = int(opp_meta.get("leverage_proposal", signal.leverage))
-            meta = dict(opp_meta) if opp_meta else {}
+            base_meta = dict(signal.metadata) if isinstance(signal.metadata, dict) else {}
+            opp_part = dict(opp_meta) if opp_meta else {}
+            meta = {**base_meta, **opp_part}
             signal = dataclasses.replace(signal, leverage=max(1, lev), metadata=meta)
             enriched = enrich_fc(candidate.coin, dataclasses.asdict(signal))
             signal = dataclasses.replace(
@@ -554,6 +589,31 @@ class AceVaultEngine:
                 signal.annualized_carry,
                 signal.funding_trend,
             )
+            if self._cost_guard is not None:
+                cost_approved, cost_details = self._cost_guard.should_allow_entry(
+                    signal.coin,
+                    float(signal.position_size_usd),
+                    signal.side,
+                )
+            else:
+                cost_approved, cost_details = True, {
+                    "reason": "cost_guard_unconfigured",
+                    "total_cost_bps": 0.0,
+                    "spread_bps": 0.0,
+                    "slippage_bps": 0.0,
+                }
+            if not cost_approved:
+                logger.info(
+                    "ACEVAULT_COST_REJECTED coin=%s reason=%s total_cost_bps=%.2f",
+                    signal.coin,
+                    cost_details.get("reason", ""),
+                    float(cost_details.get("total_cost_bps", 0.0)),
+                )
+                continue
+            md_cost = dict(signal.metadata) if isinstance(signal.metadata, dict) else {}
+            md_cost["expected_entry_price"] = float(signal.entry_price)
+            md_cost["estimated_cost_bps"] = float(cost_details.get("total_cost_bps", 0.0))
+            signal = dataclasses.replace(signal, metadata=md_cost)
             base_usd = float(signal.position_size_usd)
             risk_decision = self.risk_layer.validate(signal, "acevault")
             if not risk_decision.approved:
@@ -703,9 +763,18 @@ class AceVaultEngine:
             decision_id = str(uuid.uuid4())
             if self._journal is not None:
                 try:
+                    exp_entry_kw = None
+                    if isinstance(signal.metadata, dict):
+                        raw_exp = signal.metadata.get("expected_entry_price")
+                        if raw_exp is not None:
+                            try:
+                                exp_entry_kw = float(raw_exp)
+                            except (TypeError, ValueError):
+                                exp_entry_kw = None
                     decision_id = await self._journal.log_entry(
                         signal=signal,
                         fathom_result=fathom_result,
+                        expected_entry_price=exp_entry_kw,
                     )
                     logger.info(
                         "DECISION_JOURNAL_ENTRY_LOGGED id=%s coin=%s regime=%s",
@@ -732,6 +801,15 @@ class AceVaultEngine:
 
             if self.risk_layer.portfolio_state is not None:
                 self.risk_layer.portfolio_state.register_position("acevault", position)
+
+            if isinstance(signal.metadata, dict):
+                self._last_entry_metadata_by_coin[signal.coin] = {
+                    "expected_entry_price": float(signal.entry_price),
+                    "estimated_cost_bps": float(
+                        signal.metadata.get("estimated_cost_bps", 0.0) or 0.0
+                    ),
+                    "position_id": decision_id,
+                }
 
             results.append(signal)
 

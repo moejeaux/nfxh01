@@ -10,6 +10,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import yaml
@@ -20,7 +21,9 @@ from hyperliquid.info import Info
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.engines.acevault.engine import AceVaultEngine
+from src.engines.acevault.entry import EntryManager
 from src.engines.acevault.scanner import AltScanner
+from src.execution.cost_guard import CostGuard
 from src.fathom.advisor import FathomAdvisor
 from src.market_data.hyperliquid_btc import fetch_real_market_data
 from src.market_universe.top25_universe import Top25UniverseManager
@@ -104,7 +107,38 @@ async def run_verification_cycle(config: dict, hl_client: Info) -> dict:
     
     # Test Fathom connectivity
     ollama_reachable, model_responding = await verify_fathom_connectivity(config)
-    
+
+    verification_signal = None
+    cost_guard_ok = True
+    cost_guard_details: dict | None = None
+    sizing_preview: dict[str, float] = {}
+    risk_block = config.get("risk") or {}
+    correlated_short_limit_configured = "max_correlated_shorts" in risk_block
+
+    if candidates and regime_state is not None:
+        try:
+            entry_mgr = EntryManager(config, portfolio_state)
+            verification_signal = entry_mgr._build_signal(candidates[0], regime_state)
+        except Exception:
+            verification_signal = None
+        if verification_signal is not None:
+            try:
+                tc = float(risk_block.get("total_capital_usd", 0.0))
+                rpt = float(risk_block.get("risk_per_trade_pct", 0.0))
+                sizing_preview["risk_budget_usd"] = tc * rpt
+            except (TypeError, ValueError):
+                sizing_preview["risk_budget_usd"] = 0.0
+            sizing_preview["computed_size_usd"] = float(verification_signal.position_size_usd)
+            if isinstance(config.get("execution"), dict):
+                cg = CostGuard(config, SimpleNamespace(info=hl_client))
+                ok, det = cg.should_allow_entry(
+                    verification_signal.coin,
+                    float(verification_signal.position_size_usd),
+                    verification_signal.side,
+                )
+                cost_guard_ok = bool(ok)
+                cost_guard_details = det
+
     return {
         "market_data": market_data,
         "regime_state": regime_state,
@@ -114,6 +148,12 @@ async def run_verification_cycle(config: dict, hl_client: Info) -> dict:
         "kill_switch_active": kill_switch.is_active("acevault"),
         "ollama_reachable": ollama_reachable,
         "model_responding": model_responding,
+        "verification_signal": verification_signal,
+        "cost_guard_ok": cost_guard_ok,
+        "cost_guard_details": cost_guard_details,
+        "sizing_preview": sizing_preview,
+        "correlated_short_limit_configured": correlated_short_limit_configured,
+        "max_correlated_shorts_value": risk_block.get("max_correlated_shorts"),
     }
 
 
@@ -202,18 +242,92 @@ def print_verification_report(verification_data: dict) -> bool:
     
     # Fathom is advisory only, so don't fail overall verification if it's down
     # all_pass &= ollama_reachable and model_responding
-    
+
     print()
-    
+
+    # Execution Cost Guard
+    print("Execution Cost Guard:")
+    det = verification_data.get("cost_guard_details")
+    if det is None:
+        print("  [PASS] Estimated spread: n/a bps (execution block or signal unavailable)")
+        print("  [PASS] Estimated slippage: n/a bps")
+        print("  [PASS] Estimated round-trip cost: n/a bps")
+    else:
+        spread = float(det.get("spread_bps", 0.0))
+        slip = float(det.get("slippage_bps", 0.0))
+        total = float(det.get("total_cost_bps", 0.0))
+        cg_ok = bool(verification_data.get("cost_guard_ok", True))
+        sp_pass = spread >= 0.0
+        sl_pass = slip >= 0.0
+        tot_pass = cg_ok
+        print(f"  [{'PASS' if sp_pass else 'FAIL'}] Estimated spread: {spread:.2f} bps")
+        print(f"  [{'PASS' if sl_pass else 'FAIL'}] Estimated slippage: {slip:.2f} bps")
+        print(f"  [{'PASS' if tot_pass else 'FAIL'}] Estimated round-trip cost: {total:.2f} bps")
+        all_pass &= sp_pass and sl_pass and tot_pass
+
+    print()
+
+    # Position Sizing
+    print("Position Sizing:")
+    spv = verification_data.get("sizing_preview") or {}
+    if verification_data.get("verification_signal") is not None:
+        comp = float(spv.get("computed_size_usd", 0.0))
+        rb = float(spv.get("risk_budget_usd", 0.0))
+        sz_pass = comp > 0.0
+        rb_pass = rb >= 0.0
+        print(f"  [{'PASS' if sz_pass else 'FAIL'}] Computed size: ${comp:.2f}")
+        print(f"  [{'PASS' if rb_pass else 'FAIL'}] Risk budget per trade: ${rb:.2f}")
+        all_pass &= sz_pass and rb_pass
+    else:
+        print("  [PASS] Computed size: $n/a (no candidate signal for sizing preview)")
+        print("  [PASS] Risk budget per trade: $n/a (no candidate signal for sizing preview)")
+
+    print()
+
+    # Risk Extensions
+    print("Risk Extensions:")
+    mcs = verification_data.get("max_correlated_shorts_value", "missing")
+    csc = verification_data.get("correlated_short_limit_configured", False)
+    print(
+        f"  [{'PASS' if csc else 'FAIL'}] Correlated short limit configured: {mcs}"
+    )
+    all_pass &= bool(csc)
+
+    print()
+
     return all_pass
 
 
-async def submit_verification_trade(config: dict, hl_client: Info, candidates: list) -> bool:
+async def submit_verification_trade(
+    config: dict,
+    hl_client: Info,
+    candidates: list,
+    *,
+    verification_signal=None,
+    cost_guard_ok: bool = True,
+    cost_guard_details: dict | None = None,
+) -> bool:
     """Submit a small verification trade if conditions are met."""
     if not candidates:
         print("No candidates available for verification trade")
         return False
-    
+
+    if verification_signal is not None and not cost_guard_ok:
+        reason = ""
+        if isinstance(cost_guard_details, dict):
+            reason = str(cost_guard_details.get("reason", ""))
+        total_bps = 0.0
+        if isinstance(cost_guard_details, dict):
+            try:
+                total_bps = float(cost_guard_details.get("total_cost_bps", 0.0))
+            except (TypeError, ValueError):
+                total_bps = 0.0
+        print(
+            f"  [FAIL] Verification trade blocked by cost guard: reason={reason} "
+            f"total_cost_bps={total_bps:.2f}"
+        )
+        return False
+
     verification_size = config["acevault"]["verification_size_usd"]
     top_candidate = candidates[0]
     
@@ -256,7 +370,12 @@ async def main() -> None:
         # Submit verification trade if all checks pass and valid signal exists
         if all_pass and verification_data["candidates"]:
             trade_submitted = await submit_verification_trade(
-                config, hl_client, verification_data["candidates"]
+                config,
+                hl_client,
+                verification_data["candidates"],
+                verification_signal=verification_data.get("verification_signal"),
+                cost_guard_ok=bool(verification_data.get("cost_guard_ok", True)),
+                cost_guard_details=verification_data.get("cost_guard_details"),
             )
             if trade_submitted:
                 print("\nVERIFICATION COMPLETE: All systems operational")
