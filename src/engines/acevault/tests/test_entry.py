@@ -137,6 +137,36 @@ def test_gate_regime_fails(entry_manager, sample_candidate, sample_regime, caplo
     assert "regime_weight 0.0 for trending_down" in caplog.text
 
 
+def test_gate_ranging_structure_rejects_with_coin_and_snap(entry_manager, sample_candidate, caplog):
+    regime = RegimeState(
+        regime=RegimeType.RANGING,
+        confidence=0.7,
+        timestamp=datetime.now(timezone.utc),
+        indicators_snapshot={
+            "ranging_structure_ok": False,
+            "legacy_ranging_candidate": True,
+            "strict_ranging_evaluated": True,
+            "strict_ranging_pass": False,
+            "strict_ranging_fail_reasons": ["htf_slope_too_high", "insufficient_edge_bounces"],
+        },
+    )
+    sample_candidate.weakness_score = 0.5
+    sample_candidate.volume_ratio = 1.2
+    with caplog.at_level("INFO"):
+        result = entry_manager.should_enter(sample_candidate, regime, 0.6)
+    assert result is None
+    assert "gate=ranging_structure_gate" in caplog.text
+    assert "coin=SOL" in caplog.text
+    assert "strict_ranging_fail_reasons=htf_slope_too_high,insufficient_edge_bounces" in caplog.text
+    assert entry_manager.ranging_entry_cycle_observability()["ranging_candidates_seen_this_cycle"] == 1
+    assert (
+        entry_manager.ranging_entry_cycle_observability()[
+            "ranging_candidates_blocked_by_structure_this_cycle"
+        ]
+        == 1
+    )
+
+
 def test_gate_duplicate_fails(entry_manager, sample_candidate, sample_regime, mock_portfolio_state, caplog):
     existing_signal = AceSignal(
         coin="SOL",

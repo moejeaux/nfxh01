@@ -8,6 +8,60 @@ from src.regime.regime_metrics import record_cycle as _regime_metrics_record_cyc
 logger = logging.getLogger(__name__)
 
 
+def _ranging_observability_flags(
+    *,
+    legacy_ranging: bool,
+    strict_evaluated: bool,
+    strict_pass: bool,
+    fail_reasons: list[str],
+) -> dict[str, Any]:
+    return {
+        "legacy_ranging_candidate": legacy_ranging,
+        "strict_ranging_evaluated": strict_evaluated,
+        "strict_ranging_pass": strict_pass,
+        "strict_ranging_fail_reasons": list(fail_reasons),
+    }
+
+
+def _collect_strict_fail_reasons(
+    *,
+    slope: float,
+    width_atr_ratio: float,
+    bounces: float,
+    vol_exp: float,
+    max_slope: float,
+    min_w_atr: float,
+    min_bounces: int,
+    max_vol_exp: float,
+) -> list[str]:
+    reasons: list[str] = []
+    if abs(slope) > max_slope:
+        reasons.append("htf_slope_too_high")
+    if width_atr_ratio < min_w_atr:
+        reasons.append("range_width_too_narrow_vs_atr")
+    if int(bounces) < min_bounces:
+        reasons.append("insufficient_edge_bounces")
+    if vol_exp > max_vol_exp:
+        reasons.append("vol_expansion_blocked")
+    return reasons
+
+
+def _fmt_regime_strict_log_tail(md: dict[str, Any]) -> str:
+    reasons = md.get("strict_ranging_fail_reasons") or []
+    rs = ",".join(str(x) for x in reasons) if reasons else ""
+    return (
+        f"legacy_ranging_candidate={md.get('legacy_ranging_candidate')} "
+        f"strict_ranging_evaluated={md.get('strict_ranging_evaluated')} "
+        f"strict_ranging_pass={md.get('strict_ranging_pass')} "
+        f"strict_ranging_fail_reasons={rs} "
+        f"btc_htf_slope_norm={md.get('btc_htf_slope_norm', '')} "
+        f"btc_range_width_pct={md.get('btc_range_width_pct', '')} "
+        f"btc_atr_pct={md.get('btc_atr_pct', '')} "
+        f"btc_range_bounce_count={md.get('btc_range_bounce_count', '')} "
+        f"btc_vol_expansion_ratio={md.get('btc_vol_expansion_ratio', '')}"
+    )
+
+
 class RegimeDetector:
     def __init__(self, config: dict, data_fetcher: Callable) -> None:
         self._config = config
@@ -27,11 +81,19 @@ class RegimeDetector:
         )
         md.update(flags)
 
+        strict_eval = bool(md.get("strict_ranging_evaluated"))
+        strict_pass = bool(md.get("strict_ranging_pass"))
+        fail_list = md.get("strict_ranging_fail_reasons")
+        if not isinstance(fail_list, list):
+            fail_list = []
+
         _regime_metrics_record_cycle(
             legacy_ranging=legacy_regime == RegimeType.RANGING,
             final_ranging=new_regime == RegimeType.RANGING,
-            strict_applied=bool(flags.get("ranging_strict_applied")),
             strict_passed=bool(flags.get("ranging_strict_passed")),
+            strict_evaluated=strict_eval,
+            strict_ranging_pass=strict_pass,
+            fail_reasons=fail_list,
         )
 
         logger.info(
@@ -41,6 +103,7 @@ class RegimeDetector:
             md.get("ranging_structure_ok"),
             md.get("ranging_expansion_block"),
         )
+        logger.info("REGIME_DETECTED_STRICT %s", _fmt_regime_strict_log_tail(md))
 
         if new_regime != self._current_regime and not self._should_apply_cooldown():
             self._emit_transition(new_regime)
@@ -71,13 +134,37 @@ class RegimeDetector:
             "ranging_strict_passed": False,
         }
         if legacy_regime != RegimeType.RANGING:
+            base_flags.update(
+                _ranging_observability_flags(
+                    legacy_ranging=False,
+                    strict_evaluated=False,
+                    strict_pass=True,
+                    fail_reasons=[],
+                )
+            )
             return legacy_regime, legacy_conf, base_flags
 
         rc = (self._config.get("regime") or {}).get("ranging_classifier") or {}
         if rc.get("enabled", True) is False:
+            base_flags.update(
+                _ranging_observability_flags(
+                    legacy_ranging=True,
+                    strict_evaluated=False,
+                    strict_pass=True,
+                    fail_reasons=[],
+                )
+            )
             return legacy_regime, legacy_conf, base_flags
 
         if "btc_htf_slope_norm" not in md:
+            base_flags.update(
+                _ranging_observability_flags(
+                    legacy_ranging=True,
+                    strict_evaluated=False,
+                    strict_pass=True,
+                    fail_reasons=[],
+                )
+            )
             return legacy_regime, legacy_conf, base_flags
 
         slope = float(md.get("btc_htf_slope_norm", 0.0))
@@ -102,6 +189,20 @@ class RegimeDetector:
             and int(bounces) >= min_bounces
             and vol_exp <= max_vol_exp
         )
+        fail_reasons = (
+            []
+            if strict_ok
+            else _collect_strict_fail_reasons(
+                slope=slope,
+                width_atr_ratio=width_atr_ratio,
+                bounces=bounces,
+                vol_exp=vol_exp,
+                max_slope=max_slope,
+                min_w_atr=min_w_atr,
+                min_bounces=min_bounces,
+                max_vol_exp=max_vol_exp,
+            )
+        )
 
         flags: dict[str, Any] = {
             "ranging_structure_ok": strict_ok,
@@ -109,6 +210,14 @@ class RegimeDetector:
             "ranging_strict_applied": True,
             "ranging_strict_passed": strict_ok,
         }
+        flags.update(
+            _ranging_observability_flags(
+                legacy_ranging=True,
+                strict_evaluated=True,
+                strict_pass=strict_ok,
+                fail_reasons=fail_reasons,
+            )
+        )
 
         if strict_ok:
             return RegimeType.RANGING, max(legacy_conf, float(rc.get("strict_confidence", 0.72))), flags

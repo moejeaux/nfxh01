@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from src.engines.acevault.engine import AceVaultEngine
 from src.engines.acevault.models import AcePosition, AceSignal, AltCandidate
 from src.engines.acevault.exit import AceExit
+from src.regime.detector import RegimeDetector
 from src.regime.models import RegimeType, RegimeState
 
 
@@ -506,3 +507,205 @@ async def test_deterministic_path_unchanged_after_topk_advisory_failure(engine, 
     req = engine.degen_executor.submit_trade.call_args[0][0]
     assert req.coin == "DOGE"
     assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_ranging_shadow_and_entry_cycle_logged(
+    mock_hl_client, mock_risk_layer, mock_degen_executor, caplog
+):
+    import src.engines.acevault.acevault_metrics as am
+    import src.regime.regime_metrics as rmm
+
+    rmm.reset()
+    am.reset()
+    caplog.set_level("INFO")
+
+    cfg = {
+        "regime": {
+            "btc_1h_risk_off_threshold": -0.02,
+            "btc_vol_risk_off_threshold": 0.008,
+            "btc_4h_trend_threshold": 0.015,
+            "btc_vol_trend_threshold": 0.006,
+            "min_transition_interval_minutes": 15,
+            "ranging_classifier": {
+                "max_trend_slope_for_range": 0.0008,
+                "min_range_width_relative_to_ATR": 1.35,
+                "min_recent_bounces_at_range_edges": 2,
+                "max_vol_expansion_for_range": 1.6,
+                "trend_agreement_min_slope_norm": 0.0002,
+                "trend_agreement_min_4h_return": 0.004,
+            },
+        },
+        "acevault": {
+            "regime_weights": {
+                "trending_up": 0.4,
+                "trending_down": 0.9,
+                "ranging": 0.6,
+                "risk_off": 0.0,
+            },
+            "max_candidates": 5,
+            "min_weakness_score": 0.3,
+            "ranging_min_weakness_score": 0.45,
+            "min_volume_ratio": 0.8,
+            "stop_loss_distance_pct": 0.3,
+            "take_profit_distance_pct": 2.7,
+            "max_concurrent_positions": 5,
+            "default_position_size_usd": 150,
+            "max_hold_minutes": 240,
+            "ranging_trade": {
+                "min_expected_move_to_cost_ratio": 0.0,
+                "bars_cooldown_after_loss": 0,
+                "reentry_reset_require_opposite_edge": False,
+                "ranging_bar_interval_seconds": 300,
+            },
+            "exit_overrides": {"ranging": {"hard_target_r_cap": 2.0}},
+        },
+    }
+
+    ranging_md = {
+        "btc_1h_return": 0.001,
+        "btc_4h_return": -0.001,
+        "btc_vol_1h": 0.003,
+        "btc_htf_slope_norm": 0.001,
+        "btc_range_width_pct": 0.01,
+        "btc_atr_pct": 0.02,
+        "btc_range_bounce_count": 0.0,
+        "btc_vol_expansion_ratio": 1.0,
+    }
+
+    with patch("src.engines.acevault.engine.AltScanner"), patch("src.engines.acevault.engine.ExitManager"):
+        engine = AceVaultEngine(
+            cfg,
+            mock_hl_client,
+            RegimeDetector(cfg, None),
+            mock_risk_layer,
+            mock_degen_executor,
+        )
+
+    scanner_mock = Mock()
+    scanner_mock.scan.return_value = [
+        AltCandidate(
+            coin="DOGE",
+            weakness_score=0.5,
+            relative_strength_1h=-0.02,
+            momentum_score=-0.1,
+            volume_ratio=1.2,
+            current_price=0.08,
+            timestamp=datetime.now(timezone.utc),
+        )
+    ]
+    engine._scanner = scanner_mock
+
+    exit_mock = Mock()
+    exit_mock.check_exits.return_value = []
+    engine._exit_manager = exit_mock
+
+    with patch.object(engine, "_fetch_market_data", return_value=ranging_md), \
+         patch.object(engine, "_fetch_current_prices", return_value={}):
+        await engine.run_cycle()
+
+    assert "ACEVAULT_RANGING_SHADOW_CYCLE ranked_count=1 top_coins=DOGE" in caplog.text
+    assert "ACEVAULT_RANGING_ENTRY_CYCLE candidates_ranked=1" in caplog.text
+    assert "blocked_by_ranging_structure_gate=1" in caplog.text
+    assert am.snapshot()["cycles_with_ranging_structure_block"] == 1
+
+
+@pytest.mark.asyncio
+async def test_ranging_shadow_and_entry_cycle_logged(
+    mock_hl_client, mock_risk_layer, mock_degen_executor, caplog
+):
+    import src.engines.acevault.acevault_metrics as am
+    import src.regime.regime_metrics as rmm
+
+    rmm.reset()
+    am.reset()
+    caplog.set_level("INFO")
+
+    cfg = {
+        "regime": {
+            "btc_1h_risk_off_threshold": -0.02,
+            "btc_vol_risk_off_threshold": 0.008,
+            "btc_4h_trend_threshold": 0.015,
+            "btc_vol_trend_threshold": 0.006,
+            "min_transition_interval_minutes": 15,
+            "ranging_classifier": {
+                "max_trend_slope_for_range": 0.0008,
+                "min_range_width_relative_to_ATR": 1.35,
+                "min_recent_bounces_at_range_edges": 2,
+                "max_vol_expansion_for_range": 1.6,
+                "trend_agreement_min_slope_norm": 0.0002,
+                "trend_agreement_min_4h_return": 0.004,
+            },
+        },
+        "acevault": {
+            "regime_weights": {
+                "trending_up": 0.4,
+                "trending_down": 0.9,
+                "ranging": 0.6,
+                "risk_off": 0.0,
+            },
+            "max_candidates": 5,
+            "min_weakness_score": 0.3,
+            "ranging_min_weakness_score": 0.45,
+            "min_volume_ratio": 0.8,
+            "stop_loss_distance_pct": 0.3,
+            "take_profit_distance_pct": 2.7,
+            "max_concurrent_positions": 5,
+            "default_position_size_usd": 150,
+            "max_hold_minutes": 240,
+            "ranging_trade": {
+                "min_expected_move_to_cost_ratio": 0.0,
+                "bars_cooldown_after_loss": 0,
+                "reentry_reset_require_opposite_edge": False,
+                "ranging_bar_interval_seconds": 300,
+            },
+            "exit_overrides": {"ranging": {"hard_target_r_cap": 2.0}},
+        },
+    }
+
+    ranging_md = {
+        "btc_1h_return": 0.001,
+        "btc_4h_return": -0.001,
+        "btc_vol_1h": 0.003,
+        "btc_htf_slope_norm": 0.001,
+        "btc_range_width_pct": 0.01,
+        "btc_atr_pct": 0.02,
+        "btc_range_bounce_count": 0.0,
+        "btc_vol_expansion_ratio": 1.0,
+    }
+
+    with patch("src.engines.acevault.engine.AltScanner"), patch("src.engines.acevault.engine.ExitManager"):
+        engine = AceVaultEngine(
+            cfg,
+            mock_hl_client,
+            RegimeDetector(cfg, None),
+            mock_risk_layer,
+            mock_degen_executor,
+        )
+
+    scanner_mock = Mock()
+    scanner_mock.scan.return_value = [
+        AltCandidate(
+            coin="DOGE",
+            weakness_score=0.5,
+            relative_strength_1h=-0.02,
+            momentum_score=-0.1,
+            volume_ratio=1.2,
+            current_price=0.08,
+            timestamp=datetime.now(timezone.utc),
+        )
+    ]
+    engine._scanner = scanner_mock
+
+    exit_mock = Mock()
+    exit_mock.check_exits.return_value = []
+    engine._exit_manager = exit_mock
+
+    with patch.object(engine, "_fetch_market_data", return_value=ranging_md), \
+         patch.object(engine, "_fetch_current_prices", return_value={}):
+        await engine.run_cycle()
+
+    assert "ACEVAULT_RANGING_SHADOW_CYCLE ranked_count=1 top_coins=DOGE" in caplog.text
+    assert "ACEVAULT_RANGING_ENTRY_CYCLE candidates_ranked=1" in caplog.text
+    assert "blocked_by_ranging_structure_gate=1" in caplog.text
+    assert am.snapshot()["cycles_with_ranging_structure_block"] == 1

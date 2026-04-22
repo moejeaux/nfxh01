@@ -30,11 +30,13 @@ from src.intelligence.topk_review import run_topk_advisory_review
 from src.market_data.hyperliquid_btc import fetch_real_market_data
 from src.regime.detector import RegimeDetector
 from src.regime.models import RegimeState, RegimeType
+from src.engines.acevault import acevault_metrics as acevault_metrics_mod
 from src.engines.acevault.acevault_metrics import log_entry_gate_snapshot
 
 logger = logging.getLogger(__name__)
 
 _METRICS_CYCLE_INTERVAL = 20
+_SHADOW_RANKED_COINS_CAP = 64
 
 
 class AceVaultEngine:
@@ -376,6 +378,10 @@ class AceVaultEngine:
         self._topk_review_calls_this_cycle = 0
         results: list[AceExit | AceSignal] = []
 
+        _reset_obs = getattr(self._entry_manager, "reset_ranging_entry_cycle_observability", None)
+        if callable(_reset_obs):
+            _reset_obs()
+
         market_data = await self._fetch_market_data()
         regime_state = self.regime_detector.detect(market_data=market_data)
         weight = self._get_regime_weight(regime_state.regime)
@@ -510,6 +516,18 @@ class AceVaultEngine:
         ranked = self._acevault_opportunity_rows(candidates, regime_state)
         self._launch_topk_review_background(ranked)
 
+        snap0 = regime_state.indicators_snapshot or {}
+        if bool(snap0.get("legacy_ranging_candidate")) and not bool(snap0.get("strict_ranging_pass")):
+            top_coins = [c.coin for c, _ in ranked[:_SHADOW_RANKED_COINS_CAP]]
+            fr = snap0.get("strict_ranging_fail_reasons") or []
+            rs = ",".join(str(x) for x in fr) if fr else ""
+            logger.info(
+                "ACEVAULT_RANGING_SHADOW_CYCLE ranked_count=%d top_coins=%s strict_ranging_fail_reasons=%s",
+                len(ranked),
+                ",".join(top_coins),
+                rs,
+            )
+
         # --- pre-build signals and run Fathom concurrently for all candidates ---
         valid_signals: list[tuple[AceSignal, float]] = []
         for candidate, opp_meta in ranked:
@@ -546,6 +564,46 @@ class AceVaultEngine:
                 )
                 continue
             valid_signals.append((signal, base_usd))
+
+        _obs_fn = getattr(self._entry_manager, "ranging_entry_cycle_observability", None)
+        if callable(_obs_fn):
+            _raw_obs = _obs_fn()
+            obs = (
+                _raw_obs
+                if isinstance(_raw_obs, dict)
+                else {
+                    "ranging_candidates_seen_this_cycle": 0,
+                    "ranging_candidates_blocked_by_structure_this_cycle": 0,
+                }
+            )
+        else:
+            obs = {
+                "ranging_candidates_seen_this_cycle": 0,
+                "ranging_candidates_blocked_by_structure_this_cycle": 0,
+            }
+        if obs["ranging_candidates_blocked_by_structure_this_cycle"] > 0:
+            acevault_metrics_mod.incr_cycle_with_ranging_structure_block()
+        snap1 = regime_state.indicators_snapshot or {}
+        fr1 = snap1.get("strict_ranging_fail_reasons") or []
+        rs1 = ",".join(str(x) for x in fr1) if fr1 else ""
+        cycles_block_total = int(
+            acevault_metrics_mod.snapshot().get("cycles_with_ranging_structure_block", 0)
+        )
+        logger.info(
+            "ACEVAULT_RANGING_ENTRY_CYCLE candidates_ranked=%d ranging_candidates_seen=%d "
+            "blocked_by_ranging_structure_gate=%d cycles_with_ranging_structure_block=%d "
+            "legacy_ranging_candidate=%s strict_ranging_evaluated=%s strict_ranging_pass=%s "
+            "strict_ranging_fail_reasons=%s regime=%s",
+            len(ranked),
+            obs["ranging_candidates_seen_this_cycle"],
+            obs["ranging_candidates_blocked_by_structure_this_cycle"],
+            cycles_block_total,
+            snap1.get("legacy_ranging_candidate"),
+            snap1.get("strict_ranging_evaluated"),
+            snap1.get("strict_ranging_pass"),
+            rs1,
+            regime_state.regime.value,
+        )
 
         # Fetch all prior contexts concurrently
         if self._fathom_advisor is not None and valid_signals:

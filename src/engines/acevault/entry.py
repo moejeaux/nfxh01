@@ -16,6 +16,20 @@ class EntryManager:
         self._config = config
         self._acevault_cfg = config["acevault"]
         self._portfolio_state = portfolio_state
+        self._ranging_candidates_seen_this_cycle = 0
+        self._ranging_candidates_blocked_by_structure_this_cycle = 0
+
+    def reset_ranging_entry_cycle_observability(self) -> None:
+        self._ranging_candidates_seen_this_cycle = 0
+        self._ranging_candidates_blocked_by_structure_this_cycle = 0
+
+    def ranging_entry_cycle_observability(self) -> dict[str, int]:
+        return {
+            "ranging_candidates_seen_this_cycle": self._ranging_candidates_seen_this_cycle,
+            "ranging_candidates_blocked_by_structure_this_cycle": (
+                self._ranging_candidates_blocked_by_structure_this_cycle
+            ),
+        }
 
     def _ranging_trade_cfg(self) -> dict[str, Any]:
         return (self._acevault_cfg.get("ranging_trade") or {})
@@ -23,12 +37,13 @@ class EntryManager:
     def should_enter(
         self, candidate: AltCandidate, regime: RegimeState, regime_weight: float
     ) -> AceSignal | None:
+        self._ranging_candidates_seen_this_cycle += 1
         snap = regime.indicators_snapshot or {}
         gates = [
             ("weakness_gate", self._check_weakness_gate, (candidate, regime)),
             ("liquidity_gate", self._check_liquidity_gate, (candidate,)),
             ("regime_gate", self._check_regime_gate, (regime.regime, regime_weight)),
-            ("ranging_structure_gate", self._check_ranging_structure_gate, (regime, snap)),
+            ("ranging_structure_gate", self._check_ranging_structure_gate, (candidate, regime, snap)),
             ("duplicate_gate", self._check_duplicate_gate, (candidate.coin,)),
             ("ranging_geometry_gate", self._check_ranging_geometry_gate, (candidate, regime, snap)),
             ("loss_cooldown_gate", self._check_loss_cooldown_gate, (candidate.coin,)),
@@ -56,14 +71,29 @@ class EntryManager:
         )
         return signal
 
-    def _check_ranging_structure_gate(self, regime: RegimeState, snap: dict[str, Any]) -> bool:
+    def _check_ranging_structure_gate(
+        self, candidate: AltCandidate, regime: RegimeState, snap: dict[str, Any]
+    ) -> bool:
         if regime.regime != RegimeType.RANGING:
             return True
         ok = bool(snap.get("ranging_structure_ok", True))
         if not ok:
+            self._ranging_candidates_blocked_by_structure_this_cycle += 1
             incr_reject("ranging_structure_gate")
+            reasons = snap.get("strict_ranging_fail_reasons") or []
+            rs = ",".join(str(x) for x in reasons) if reasons else ""
             logger.info(
-                "ACEVAULT_ENTRY_REJECTED coin=n/a gate=ranging_structure_gate reason=ranging_structure_ok_false",
+                "ACEVAULT_ENTRY_REJECTED coin=%s gate=ranging_structure_gate "
+                "reason=ranging_structure_ok_false regime=%s ranging_structure_ok=%s "
+                "legacy_ranging_candidate=%s strict_ranging_evaluated=%s strict_ranging_pass=%s "
+                "strict_ranging_fail_reasons=%s",
+                candidate.coin,
+                regime.regime.value,
+                snap.get("ranging_structure_ok"),
+                snap.get("legacy_ranging_candidate"),
+                snap.get("strict_ranging_evaluated"),
+                snap.get("strict_ranging_pass"),
+                rs,
             )
         return ok
 

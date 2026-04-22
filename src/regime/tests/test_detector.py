@@ -102,6 +102,11 @@ def test_detect_ranging_default(detector):
     assert isinstance(result, RegimeState)
     for k, v in market_data.items():
         assert result.indicators_snapshot[k] == v
+    snap = result.indicators_snapshot
+    assert snap.get("legacy_ranging_candidate") is True
+    assert snap.get("strict_ranging_evaluated") is False
+    assert snap.get("strict_ranging_pass") is True
+    assert snap.get("strict_ranging_fail_reasons") == []
 
 
 @patch('src.regime.detector.datetime')
@@ -300,6 +305,7 @@ def test_detect_logs_regime_detected(detector, caplog):
         detector.detect(market_data)
     
     assert "REGIME_DETECTED regime=risk_off confidence=0.90" in caplog.text
+    assert "REGIME_DETECTED_STRICT legacy_ranging_candidate=False" in caplog.text
 
 
 def test_strict_ranging_passes(detector):
@@ -317,6 +323,9 @@ def test_strict_ranging_passes(detector):
     assert rs.regime == RegimeType.RANGING
     assert rs.indicators_snapshot.get("ranging_strict_passed") is True
     assert rs.indicators_snapshot.get("ranging_structure_ok") is True
+    assert rs.indicators_snapshot.get("strict_ranging_evaluated") is True
+    assert rs.indicators_snapshot.get("strict_ranging_pass") is True
+    assert rs.indicators_snapshot.get("strict_ranging_fail_reasons") == []
 
 
 def test_strict_ranging_demotes_to_trending_up(detector):
@@ -333,6 +342,11 @@ def test_strict_ranging_demotes_to_trending_up(detector):
     rs = detector.detect(md)
     assert rs.regime == RegimeType.TRENDING_UP
     assert rs.indicators_snapshot.get("ranging_structure_ok") is False
+    assert rs.indicators_snapshot.get("strict_ranging_evaluated") is True
+    assert rs.indicators_snapshot.get("strict_ranging_pass") is False
+    reasons = rs.indicators_snapshot.get("strict_ranging_fail_reasons") or []
+    assert "htf_slope_too_high" in reasons
+    assert "insufficient_edge_bounces" in reasons
 
 
 def test_strict_ranging_fails_stays_ranging_without_agreement(detector):
@@ -349,3 +363,9 @@ def test_strict_ranging_fails_stays_ranging_without_agreement(detector):
     rs = detector.detect(md)
     assert rs.regime == RegimeType.RANGING
     assert rs.indicators_snapshot.get("ranging_structure_ok") is False
+    assert rs.indicators_snapshot.get("legacy_ranging_candidate") is True
+    assert rs.indicators_snapshot.get("strict_ranging_evaluated") is True
+    assert rs.indicators_snapshot.get("strict_ranging_pass") is False
+    reasons = set(rs.indicators_snapshot.get("strict_ranging_fail_reasons") or [])
+    assert "htf_slope_too_high" in reasons
+    assert "insufficient_edge_bounces" in reasons

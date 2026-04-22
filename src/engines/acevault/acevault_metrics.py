@@ -16,6 +16,7 @@ _rejected_edge_distance = 0
 _rejected_loss_cooldown = 0
 _rejected_reset = 0
 _rejected_cost_ratio = 0
+_cycles_with_ranging_structure_block = 0
 _total_exits = 0
 _exits_by_reason: dict[str, int] = {}
 _sum_realized_r_by_reason: dict[str, float] = {}
@@ -34,6 +35,12 @@ def incr_ranging_candidate() -> None:
     global _total_ranging_entry_candidates
     with _lock:
         _total_ranging_entry_candidates += 1
+
+
+def incr_cycle_with_ranging_structure_block() -> None:
+    global _cycles_with_ranging_structure_block
+    with _lock:
+        _cycles_with_ranging_structure_block += 1
 
 
 def incr_reject(gate: str) -> None:
@@ -95,11 +102,14 @@ def log_entry_gate_snapshot() -> None:
     with _lock:
         logger.info(
             "ACEVAULT_METRICS_SNAPSHOT entry_gates total_ranging_entry_candidates=%d "
-            "rejected_by_ranging_structure_gate=%d rejected_by_midpoint_gate=%d "
+            "rejected_by_ranging_structure_gate=%d ranging_candidates_blocked_by_structure=%d "
+            "cycles_with_ranging_structure_block=%d rejected_by_midpoint_gate=%d "
             "rejected_by_edge_distance_gate=%d rejected_by_loss_cooldown_gate=%d "
             "rejected_by_reset_gate=%d rejected_by_cost_ratio_gate=%d",
             _total_ranging_entry_candidates,
             _rejected_ranging_structure,
+            _rejected_ranging_structure,
+            _cycles_with_ranging_structure_block,
             _rejected_midpoint,
             _rejected_edge_distance,
             _rejected_loss_cooldown,
@@ -119,6 +129,8 @@ def snapshot() -> dict[str, Any]:
         return {
             "total_ranging_entry_candidates": _total_ranging_entry_candidates,
             "rejected_by_ranging_structure_gate": _rejected_ranging_structure,
+            "ranging_candidates_blocked_by_structure": _rejected_ranging_structure,
+            "cycles_with_ranging_structure_block": _cycles_with_ranging_structure_block,
             "rejected_by_midpoint_gate": _rejected_midpoint,
             "rejected_by_edge_distance_gate": _rejected_edge_distance,
             "rejected_by_loss_cooldown_gate": _rejected_loss_cooldown,
@@ -134,10 +146,12 @@ def snapshot() -> dict[str, Any]:
 def reset() -> None:
     global _total_ranging_entry_candidates, _rejected_ranging_structure, _rejected_midpoint
     global _rejected_edge_distance, _rejected_loss_cooldown, _rejected_reset, _rejected_cost_ratio
+    global _cycles_with_ranging_structure_block
     global _total_exits, _last_exit_summary_at
     with _lock:
         _total_ranging_entry_candidates = 0
         _rejected_ranging_structure = 0
+        _cycles_with_ranging_structure_block = 0
         _rejected_midpoint = 0
         _rejected_edge_distance = 0
         _rejected_loss_cooldown = 0
