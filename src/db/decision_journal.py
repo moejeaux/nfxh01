@@ -18,6 +18,44 @@ from src.retro.fee_estimation import (
 
 logger = logging.getLogger(__name__)
 
+_ACEVAULT_EXTENDED_ALTER_STATEMENTS: tuple[str, ...] = (
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS expected_entry_price DOUBLE PRECISION",
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS realized_entry_price DOUBLE PRECISION",
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS expected_exit_price DOUBLE PRECISION",
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS realized_exit_price DOUBLE PRECISION",
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS entry_fee_usd DOUBLE PRECISION",
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS exit_fee_usd DOUBLE PRECISION",
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS funding_usd DOUBLE PRECISION",
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS slippage_entry_usd DOUBLE PRECISION",
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS slippage_exit_usd DOUBLE PRECISION",
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS gross_pnl_usd DOUBLE PRECISION",
+    "ALTER TABLE acevault_decisions ADD COLUMN IF NOT EXISTS net_pnl_usd DOUBLE PRECISION",
+)
+
+
+def _resolve_exit_net_pnl_usd(
+    net_pnl_usd: float | None,
+    gross_pnl_usd: float | None,
+    entry_fee_usd: float | None,
+    exit_fee_usd: float | None,
+    funding_usd: float | None,
+    slippage_entry_usd: float | None,
+    slippage_exit_usd: float | None,
+) -> float | None:
+    if net_pnl_usd is not None:
+        return float(net_pnl_usd)
+    if gross_pnl_usd is None:
+        return None
+    g = float(gross_pnl_usd)
+    fees = (
+        float(entry_fee_usd or 0.0)
+        + float(exit_fee_usd or 0.0)
+        + float(funding_usd or 0.0)
+        + float(slippage_entry_usd or 0.0)
+        + float(slippage_exit_usd or 0.0)
+    )
+    return g - fees
+
 
 def _safe_capture_ratio(
     peak_r: float | None, realized_r: float | None
@@ -38,6 +76,7 @@ class DecisionJournal:
         self._pool = None  # asyncpg pool
         self._fee_taker_bps_per_side: float | None = None
         self._outcome_store = None
+        self._acevault_extended_columns_ready = False
 
     def is_connected(self) -> bool:
         return self._pool is not None
@@ -90,7 +129,23 @@ class DecisionJournal:
         )
         self._outcome_store = get_outcome_store(config or {})
 
-    async def log_entry(self, signal: AceSignal, fathom_result: dict | None = None) -> str:
+    async def _ensure_acevault_extended_columns(self) -> None:
+        if self._pool is None or self._acevault_extended_columns_ready:
+            return
+        async with self._pool.acquire() as conn:
+            for stmt in _ACEVAULT_EXTENDED_ALTER_STATEMENTS:
+                await conn.execute(stmt)
+        self._acevault_extended_columns_ready = True
+        logger.info("DECISION_JOURNAL_EXTENDED_COLUMNS ensured=true")
+
+    async def log_entry(
+        self,
+        signal: AceSignal,
+        fathom_result: dict | None = None,
+        *,
+        expected_entry_price: float | None = None,
+        realized_entry_price: float | None = None,
+    ) -> str:
         """Insert entry decision into acevault_decisions table, return UUID as string."""
         if self._pool is None:
             raise RuntimeError("DecisionJournal not connected - call connect() first")
@@ -99,18 +154,45 @@ class DecisionJournal:
         fathom_size_mult = fathom_result.get("size_mult", 1.0) if fathom_result else None
         fathom_reasoning = fathom_result.get("reasoning") if fathom_result else None
 
-        query = """
-        INSERT INTO acevault_decisions (
-            coin, decision_type, regime, weakness_score, entry_price, 
-            stop_loss_price, take_profit_price, position_size_usd,
-            fathom_override, fathom_size_mult, fathom_reasoning
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        RETURNING id
-        """
-
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                query,
+        use_extended_entry = (
+            expected_entry_price is not None or realized_entry_price is not None
+        )
+        if use_extended_entry:
+            await self._ensure_acevault_extended_columns()
+            query = """
+            INSERT INTO acevault_decisions (
+                coin, decision_type, regime, weakness_score, entry_price,
+                stop_loss_price, take_profit_price, position_size_usd,
+                fathom_override, fathom_size_mult, fathom_reasoning,
+                expected_entry_price, realized_entry_price
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            RETURNING id
+            """
+            params = (
+                signal.coin,
+                "entry",
+                signal.regime_at_entry,
+                signal.weakness_score,
+                signal.entry_price,
+                signal.stop_loss_price,
+                signal.take_profit_price,
+                signal.position_size_usd,
+                fathom_override,
+                fathom_size_mult,
+                fathom_reasoning,
+                expected_entry_price,
+                realized_entry_price,
+            )
+        else:
+            query = """
+            INSERT INTO acevault_decisions (
+                coin, decision_type, regime, weakness_score, entry_price,
+                stop_loss_price, take_profit_price, position_size_usd,
+                fathom_override, fathom_size_mult, fathom_reasoning
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING id
+            """
+            params = (
                 signal.coin,
                 "entry",
                 signal.regime_at_entry,
@@ -124,6 +206,9 @@ class DecisionJournal:
                 fathom_reasoning,
             )
 
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(query, *params)
+
         decision_id = str(row["id"])
         logger.info(
             "DECISION_JOURNAL_ENTRY_LOGGED decision_id=%s coin=%s regime=%s fathom_override=%s",
@@ -136,6 +221,14 @@ class DecisionJournal:
         if isinstance(signal.metadata, dict):
             trace_id = signal.metadata.get("opportunity_trace_id")
         if self._outcome_store is not None:
+            om: dict[str, Any] = {
+                "fathom_override": fathom_override,
+                "fathom_size_mult": fathom_size_mult,
+            }
+            if expected_entry_price is not None:
+                om["expected_entry_price"] = expected_entry_price
+            if realized_entry_price is not None:
+                om["realized_entry_price"] = realized_entry_price
             self._outcome_store.record_trade_outcome(
                 TradeOutcomeRecord(
                     timestamp=utc_iso_now(),
@@ -162,7 +255,7 @@ class DecisionJournal:
                     cost_mult=signal.metadata.get("cost_mult") if isinstance(signal.metadata, dict) else None,
                     final_score=signal.metadata.get("final_score") if isinstance(signal.metadata, dict) else None,
                     leverage_proposal=signal.metadata.get("leverage_proposal") if isinstance(signal.metadata, dict) else None,
-                    metadata={"fathom_override": fathom_override, "fathom_size_mult": fathom_size_mult},
+                    metadata=om,
                 )
             )
         return decision_id
@@ -348,7 +441,20 @@ class DecisionJournal:
             )
 
     async def log_exit(
-        self, decision_id: str, exit: AceExit, regime_at_close: str
+        self,
+        decision_id: str,
+        exit: AceExit,
+        regime_at_close: str,
+        *,
+        expected_exit_price: float | None = None,
+        realized_exit_price: float | None = None,
+        entry_fee_usd: float | None = None,
+        exit_fee_usd: float | None = None,
+        funding_usd: float | None = None,
+        slippage_entry_usd: float | None = None,
+        slippage_exit_usd: float | None = None,
+        gross_pnl_usd: float | None = None,
+        net_pnl_usd: float | None = None,
     ) -> None:
         """Update decision record with exit information."""
         if self._pool is None:
@@ -366,18 +472,80 @@ class DecisionJournal:
             entry_notional, exit_notional, self._fee_taker_bps_per_side
         )
 
-        query = """
-        UPDATE acevault_decisions
-        SET exit_price = $1, exit_reason = $2, pnl_usd = $3, pnl_pct = $4,
-            hold_duration_seconds = $5, outcome_recorded_at = $6, regime_at_close = $7,
-            peak_r_multiple = $8, realized_r_multiple = $9, peak_r_capture_ratio = $10,
-            fee_paid_usd = $11
-        WHERE id = $12
-        """
+        resolved_net = _resolve_exit_net_pnl_usd(
+            net_pnl_usd,
+            gross_pnl_usd,
+            entry_fee_usd,
+            exit_fee_usd,
+            funding_usd,
+            slippage_entry_usd,
+            slippage_exit_usd,
+        )
+        use_extended_exit = (
+            any(
+                v is not None
+                for v in (
+                    expected_exit_price,
+                    realized_exit_price,
+                    entry_fee_usd,
+                    exit_fee_usd,
+                    funding_usd,
+                    slippage_entry_usd,
+                    slippage_exit_usd,
+                    gross_pnl_usd,
+                    net_pnl_usd,
+                )
+            )
+            or (gross_pnl_usd is not None and resolved_net is not None)
+        )
 
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                query,
+        if use_extended_exit:
+            await self._ensure_acevault_extended_columns()
+            query = """
+            UPDATE acevault_decisions
+            SET exit_price = $1, exit_reason = $2, pnl_usd = $3, pnl_pct = $4,
+                hold_duration_seconds = $5, outcome_recorded_at = $6, regime_at_close = $7,
+                peak_r_multiple = $8, realized_r_multiple = $9, peak_r_capture_ratio = $10,
+                fee_paid_usd = $11,
+                expected_exit_price = $12, realized_exit_price = $13,
+                entry_fee_usd = $14, exit_fee_usd = $15, funding_usd = $16,
+                slippage_entry_usd = $17, slippage_exit_usd = $18,
+                gross_pnl_usd = $19, net_pnl_usd = $20
+            WHERE id = $21
+            """
+            exec_params = (
+                exit.exit_price,
+                exit.exit_reason,
+                exit.pnl_usd,
+                exit.pnl_pct,
+                exit.hold_duration_seconds,
+                datetime.now(timezone.utc),
+                regime_at_close,
+                peak_r,
+                realized_r,
+                capture_ratio,
+                fee_paid_usd,
+                expected_exit_price,
+                realized_exit_price,
+                entry_fee_usd,
+                exit_fee_usd,
+                funding_usd,
+                slippage_entry_usd,
+                slippage_exit_usd,
+                gross_pnl_usd,
+                resolved_net,
+                decision_id,
+            )
+        else:
+            query = """
+            UPDATE acevault_decisions
+            SET exit_price = $1, exit_reason = $2, pnl_usd = $3, pnl_pct = $4,
+                hold_duration_seconds = $5, outcome_recorded_at = $6, regime_at_close = $7,
+                peak_r_multiple = $8, realized_r_multiple = $9, peak_r_capture_ratio = $10,
+                fee_paid_usd = $11
+            WHERE id = $12
+            """
+            exec_params = (
                 exit.exit_price,
                 exit.exit_reason,
                 exit.pnl_usd,
@@ -392,6 +560,9 @@ class DecisionJournal:
                 decision_id,
             )
 
+        async with self._pool.acquire() as conn:
+            await conn.execute(query, *exec_params)
+
         logger.info(
             "DECISION_JOURNAL_EXIT_LOGGED decision_id=%s coin=%s exit_reason=%s "
             "pnl_usd=%.2f peak_r=%s realized_r=%s capture=%s fee_est_usd=%s",
@@ -405,6 +576,39 @@ class DecisionJournal:
             f"{fee_paid_usd:.6f}" if fee_paid_usd is not None else "None",
         )
         if self._outcome_store is not None:
+            om: dict[str, Any] = {
+                "exit_reason": exit.exit_reason,
+                "regime_at_close": regime_at_close,
+                "peak_r_capture_ratio": capture_ratio,
+            }
+            if use_extended_exit:
+                if expected_exit_price is not None:
+                    om["expected_exit_price"] = expected_exit_price
+                if realized_exit_price is not None:
+                    om["realized_exit_price"] = realized_exit_price
+                if entry_fee_usd is not None:
+                    om["entry_fee_usd"] = entry_fee_usd
+                if exit_fee_usd is not None:
+                    om["exit_fee_usd"] = exit_fee_usd
+                if funding_usd is not None:
+                    om["funding_usd"] = funding_usd
+                if slippage_entry_usd is not None:
+                    om["slippage_entry_usd"] = slippage_entry_usd
+                if slippage_exit_usd is not None:
+                    om["slippage_exit_usd"] = slippage_exit_usd
+                if gross_pnl_usd is not None:
+                    om["gross_pnl_usd"] = gross_pnl_usd
+                if resolved_net is not None:
+                    om["net_pnl_usd"] = resolved_net
+            rec_net = (
+                float(resolved_net)
+                if resolved_net is not None
+                else (
+                    (float(exit.pnl_usd) - float(fee_paid_usd))
+                    if fee_paid_usd is not None
+                    else float(exit.pnl_usd)
+                )
+            )
             self._outcome_store.record_trade_outcome(
                 TradeOutcomeRecord(
                     timestamp=utc_iso_now(),
@@ -422,17 +626,11 @@ class DecisionJournal:
                     realized_pnl=exit.pnl_usd,
                     fees=fee_paid_usd,
                     slippage_bps=None,
-                    realized_net_pnl=(float(exit.pnl_usd) - float(fee_paid_usd))
-                    if fee_paid_usd is not None
-                    else float(exit.pnl_usd),
+                    realized_net_pnl=rec_net,
                     hold_time_seconds=exit.hold_duration_seconds,
                     mfe_r=exit.peak_r_multiple,
                     mae_r=None,
-                    metadata={
-                        "exit_reason": exit.exit_reason,
-                        "regime_at_close": regime_at_close,
-                        "peak_r_capture_ratio": capture_ratio,
-                    },
+                    metadata=om,
                 )
             )
 
@@ -476,7 +674,7 @@ class DecisionJournal:
             SUM(pnl_usd) as total_pnl_usd
         FROM acevault_decisions 
         WHERE outcome_recorded_at IS NOT NULL 
-        AND created_at >= NOW() - ($1::integer * INTERVAL '1 hour')
+        AND outcome_recorded_at >= NOW() - ($1::integer * INTERVAL '1 hour')
         """
 
         async with self._pool.acquire() as conn:
@@ -501,6 +699,71 @@ class DecisionJournal:
         )
         return stats
 
+    async def get_regime_stats(self, regime: str, window_hours: int = 168) -> dict[str, Any]:
+        """Aggregate closed AceVault stats for a single entry ``regime`` over ``window_hours``."""
+        if self._pool is None:
+            raise RuntimeError("DecisionJournal not connected - call connect() first")
+
+        await self._ensure_acevault_extended_columns()
+
+        query = """
+        SELECT
+            COUNT(*)::bigint AS total_trades,
+            COUNT(*) FILTER (
+                WHERE COALESCE(net_pnl_usd, pnl_usd - COALESCE(fee_paid_usd, 0)) > 0
+            )::bigint AS winning_trades,
+            AVG(COALESCE(gross_pnl_usd, pnl_usd)) AS avg_gross_pnl_usd,
+            AVG(COALESCE(net_pnl_usd, pnl_usd - COALESCE(fee_paid_usd, 0))) AS avg_net_pnl_usd,
+            SUM(
+                CASE WHEN COALESCE(net_pnl_usd, pnl_usd - COALESCE(fee_paid_usd, 0)) > 0
+                THEN COALESCE(net_pnl_usd, pnl_usd - COALESCE(fee_paid_usd, 0))
+                ELSE 0 END
+            ) AS sum_wins_net,
+            SUM(
+                CASE WHEN COALESCE(net_pnl_usd, pnl_usd - COALESCE(fee_paid_usd, 0)) < 0
+                THEN COALESCE(net_pnl_usd, pnl_usd - COALESCE(fee_paid_usd, 0))
+                ELSE 0 END
+            ) AS sum_losses_net
+        FROM acevault_decisions
+        WHERE regime = $1
+          AND outcome_recorded_at IS NOT NULL
+          AND outcome_recorded_at >= NOW() - ($2::integer * INTERVAL '1 hour')
+        """
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(query, regime, window_hours)
+
+        total_trades = int(row["total_trades"] or 0)
+        winning_trades = int(row["winning_trades"] or 0)
+        win_rate = (winning_trades / total_trades) if total_trades > 0 else 0.0
+        avg_gross = float(row["avg_gross_pnl_usd"] or 0.0)
+        avg_net = float(row["avg_net_pnl_usd"] or 0.0)
+        sum_wins = float(row["sum_wins_net"] or 0.0)
+        sum_losses = float(row["sum_losses_net"] or 0.0)
+        if sum_losses < 0.0:
+            profit_factor_net = sum_wins / abs(sum_losses)
+        elif sum_wins > 0.0:
+            profit_factor_net = 1e9
+        else:
+            profit_factor_net = 0.0
+
+        out = {
+            "total_trades": total_trades,
+            "win_rate": win_rate,
+            "avg_gross_pnl_usd": avg_gross,
+            "avg_net_pnl_usd": avg_net,
+            "profit_factor_net": float(profit_factor_net),
+        }
+        logger.info(
+            "DECISION_JOURNAL_REGIME_STATS regime=%s window_hours=%d total_trades=%d "
+            "win_rate=%.4f profit_factor_net=%.4f",
+            regime,
+            window_hours,
+            total_trades,
+            win_rate,
+            profit_factor_net,
+        )
+        return out
 
     async def log_post_analysis(self, decision_id: str, analysis: str) -> None:
         """Write Fathom post-trade analysis back to the decision record."""

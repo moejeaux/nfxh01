@@ -17,6 +17,8 @@ Staged path from **research-only verification** to **controlled production** use
 
 This runbook does **not** cover editing `src/execution/` or `src/signal_ingress/`.
 
+**Where new logic belongs** (open vs manage vs observe only, activation scope, ranging/shadow rules): see [`AGENTS.md`](../AGENTS.md) at the repository root.
+
 ---
 
 ## Phase 1 — Deterministic weekly review (+ baseline file only)

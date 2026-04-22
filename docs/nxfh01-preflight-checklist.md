@@ -2,6 +2,8 @@
 
 Use before enabling each rollout phase (`docs/nxfh01-production-rollout.md`). Check **Applicable?** for your phase; leave N/A rows blank.
 
+When changing trading code, classify the work per **`AGENTS.md`** at the repo root (observability only vs entry vs exit vs post-trade analytics) so rollout toggles and code placement stay consistent.
+
 ## 1. Config sanity
 
 | Check | Applicable? | Pass? |

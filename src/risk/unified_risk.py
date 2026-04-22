@@ -157,6 +157,14 @@ class UnifiedRiskLayer:
             )
             return RiskDecision(approved=False, reason="gross_exposure_limit")
 
+        if signal.side == "short":
+            if self._portfolio_state.is_correlated_short_overloaded(signal, self._config):
+                logger.warning(
+                    "RISK_REJECTED engine=%s reason=correlated_short_limit",
+                    engine_id,
+                )
+                return RiskDecision(approved=False, reason="correlated_short_limit")
+
         min_cap = self._risk_cfg.get("min_available_capital_usd", 10.50)
         available = self.get_available_capital(engine_id)
         if available < min_cap:

@@ -14,6 +14,15 @@ hyperliquid_api:
   backoff_max_seconds: 120.0
   backoff_jitter_ratio: 0.35
 
+execution:
+  max_spread_bps: 12
+  max_slippage_bps: 15
+  max_total_round_trip_cost_bps: 35
+  entry_fee_bps: 4
+  exit_fee_bps: 4
+  fallback_spread_bps: 10
+  fallback_slippage_bps: 12
+
 universe:
   enabled: true
   top_n: 25
@@ -522,13 +531,22 @@ cascade_forecaster:
     high: 0.65
     critical: 0.85
 
+verification:
+  shadow_mode_enabled: false
+  shadow_cycles: 1
+
 risk:
   # UnifiedRiskLayer is mandatory before any order reaches execution; no bypass flags.
+  risk_per_trade_pct: 0.0025
+  max_position_size_usd: 150
+  min_position_size_usd: 25
   total_capital_usd: 10000
   max_portfolio_drawdown_24h: 0.05
   max_gross_multiplier: 1.5
   # null = no limit on correlated long count (tune later if needed).
   max_correlated_longs: null
+  # null = no limit on correlated short count; integer = hard cap across all engines.
+  max_correlated_shorts: null
   min_available_capital_usd: 10.50
   # Until last N closed AceVault trades meet PF + avg win/avg |loss| thresholds, scale entries by position_multiplier.
   safety_mode:

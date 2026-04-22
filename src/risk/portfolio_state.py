@@ -232,6 +232,37 @@ class PortfolioState:
             )
         return overloaded
 
+    def is_correlated_short_overloaded(self, new_signal: Any, config: dict | None = None) -> bool:
+        if new_signal.side != "short":
+            return False
+        if config is None:
+            config = getattr(self, "_unified_risk_root_config", None)
+        max_correlated: int | None = None
+        if config is not None:
+            risk = config.get("risk") or {}
+            raw = risk.get("max_correlated_shorts")
+            if raw is None:
+                return False
+            try:
+                max_correlated = int(float(raw))
+            except (TypeError, ValueError):
+                return False
+        if max_correlated is None:
+            return False
+        open_short_count = 0
+        for positions in self._positions.values():
+            for pos in positions.values():
+                if getattr(pos.signal, "side", None) == "short":
+                    open_short_count += 1
+        overloaded = open_short_count >= max_correlated
+        if overloaded:
+            logger.warning(
+                "RISK_CORRELATED_SHORT_OVERLOAD open_shorts=%d max=%d",
+                open_short_count,
+                max_correlated,
+            )
+        return overloaded
+
     def sync_from_hl(self, hl_client: Any, address: str) -> None:
         try:
             state = _user_state_compat(hl_client, address)

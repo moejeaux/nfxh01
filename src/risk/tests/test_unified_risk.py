@@ -26,6 +26,22 @@ def _make_config(**overrides):
     return {"risk": risk, "universe": {"enabled": False}}
 
 
+def _correlated_short_base_config() -> dict:
+    """Risk block required for correlated-short gate tests (see Session correlated shorts)."""
+    return {
+        "risk": {
+            "max_portfolio_drawdown_24h": 0.05,
+            "max_gross_exposure_multiplier": 1.5,
+            "max_gross_multiplier": 1.5,
+            "max_correlated_longs": 3,
+            "max_correlated_shorts": 3,
+            "total_capital_usd": 1000,
+            "min_available_capital_usd": 1.0,
+        },
+        "universe": {"enabled": False},
+    }
+
+
 @pytest.fixture
 def kill_switch():
     return KillSwitch()
@@ -181,6 +197,39 @@ class TestCorrelatedLongReject:
         result = rl.validate(sig, "acevault")
         assert result.approved is True
         assert result.reason == "approved"
+
+
+class TestCorrelatedShortReject:
+    def test_validate_rejects_correlated_short_limit(self, portfolio_state, kill_switch):
+        config = _correlated_short_base_config()
+        for i in range(3):
+            portfolio_state.register_position("acevault", _short_position(f"s{i}", size=50.0))
+        rl = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+        sig = FakeSignal(coin="ETH", side="short", position_size_usd=40.0)
+        result = rl.validate(sig, "acevault")
+        assert result.approved is False
+        assert result.reason == "correlated_short_limit"
+
+    def test_validate_allows_long_when_shorts_full(self, portfolio_state, kill_switch):
+        config = _correlated_short_base_config()
+        for i in range(3):
+            portfolio_state.register_position("acevault", _short_position(f"s{i}", size=50.0))
+        rl = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+        sig = FakeSignal(coin="ETH", side="long", position_size_usd=40.0)
+        result = rl.validate(sig, "acevault")
+        assert result.approved is True
+        assert result.reason == "approved"
+
+    def test_correlated_short_check_counts_all_engines(self, portfolio_state, kill_switch):
+        config = _correlated_short_base_config()
+        portfolio_state.register_position("acevault", _short_position("s0", size=30.0))
+        portfolio_state.register_position("growi_hf", _short_position("s1", size=30.0))
+        portfolio_state.register_position("mc_recovery", _short_position("s2", size=30.0))
+        rl = UnifiedRiskLayer(config, portfolio_state, kill_switch)
+        sig = FakeSignal(coin="SOL", side="short", position_size_usd=20.0)
+        result = rl.validate(sig, "acevault")
+        assert result.approved is False
+        assert result.reason == "correlated_short_limit"
 
 
 class TestCheckPrecedence:

@@ -136,3 +136,12 @@ Treat **mainnet** as irreversible money at risk. Use **small size**, **explicit 
 nxfh01
 ```
 Runs `src/nxfh01/main.py::main()` async entry point.
+
+- For additive upgrade sessions, modify only the files explicitly listed in the prompt
+- Never rename existing classes, methods, fields, config keys, or log lines unless the prompt explicitly says to
+- If the prompt says additive changes only, preserve existing behavior and append logic rather than rewriting working code
+- Do not refactor unrelated code
+- Do not create new dependencies unless explicitly requested
+- When API response structure is uncertain, use deterministic fallback behavior from config
+- Return only code changes for the requested files
+- If tests fail, fix the minimum code required to satisfy the existing prompt and tests
