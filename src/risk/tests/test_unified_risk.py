@@ -462,3 +462,82 @@ class TestOpportunityUniverseInteraction:
         r = rl.validate(sig, "growi")
         assert r.approved is False
         mgr.can_open.assert_called_once_with("ZORK")
+
+
+class _FakeRegimeDetector:
+    def __init__(self, regime: str = "ranging", phase: str = "STABLE") -> None:
+        self._regime = regime
+        self._phase = phase
+
+    def current_regime_value(self) -> str:
+        return self._regime
+
+    def transition_phase(self, now=None):
+        return self._phase
+
+
+class TestRegimeEffectiveRiskLimits:
+    def test_regime_override_tightens_gross_cap(self, kill_switch):
+        config = {
+            "risk": {
+                "total_capital_usd": 1000,
+                "max_portfolio_drawdown_24h": 0.99,
+                "max_gross_multiplier": 2.0,
+                "max_correlated_longs": 30,
+                "min_available_capital_usd": 1.0,
+                "regime_overrides": {
+                    "enabled": True,
+                    "by_regime": {
+                        "ranging": {
+                            "max_gross_multiplier_mult": 0.45,
+                            "risk_per_trade_mult": 1.0,
+                        },
+                    },
+                    "clamps": {
+                        "max_gross_multiplier_min": 0.1,
+                        "max_gross_multiplier_max": 10.0,
+                        "risk_per_trade_min": 0.0001,
+                        "risk_per_trade_max": 1.0,
+                    },
+                },
+            },
+            "universe": {"enabled": False},
+        }
+        ps = PortfolioState()
+        ps.register_position("a", _long_position("p1", size=850.0))
+        det = _FakeRegimeDetector("ranging", "STABLE")
+        rl = UnifiedRiskLayer(config, ps, kill_switch, regime_detector=det)
+        sig = FakeSignal(coin="X", side="long", position_size_usd=200.0)
+        assert rl.validate(sig, "acevault").approved is False
+
+    def test_same_exposure_ok_without_regime_detector(self, kill_switch):
+        config = {
+            "risk": {
+                "total_capital_usd": 1000,
+                "max_portfolio_drawdown_24h": 0.99,
+                "max_gross_multiplier": 2.0,
+                "max_correlated_longs": 30,
+                "min_available_capital_usd": 1.0,
+                "regime_overrides": {
+                    "enabled": True,
+                    "by_regime": {
+                        "ranging": {
+                            "max_gross_multiplier_mult": 0.45,
+                            "risk_per_trade_mult": 1.0,
+                        },
+                    },
+                    "clamps": {
+                        "max_gross_multiplier_min": 0.1,
+                        "max_gross_multiplier_max": 10.0,
+                        "risk_per_trade_min": 0.0001,
+                        "risk_per_trade_max": 1.0,
+                    },
+                },
+            },
+            "universe": {"enabled": False},
+        }
+        ps = PortfolioState()
+        ps.register_position("a", _long_position("p1", size=850.0))
+        rl = UnifiedRiskLayer(config, ps, kill_switch, regime_detector=None)
+        sig = FakeSignal(coin="X", side="long", position_size_usd=200.0)
+        assert rl.validate(sig, "acevault").approved is True

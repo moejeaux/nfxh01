@@ -67,3 +67,12 @@ def test_rounds_to_two_decimals(position_sizer_config):
     # equity 4000 -> risk_budget 10; stop 30% -> raw 33.333...
     out = sizer.compute_size_usd(100.0, 70.0, 4000.0)
     assert out == 33.33
+
+
+def test_explicit_risk_per_trade_pct_overrides_config(position_sizer_config):
+    sizer = PositionSizer(position_sizer_config)
+    out_default = sizer.compute_size_usd(100.0, 70.0, 4000.0)
+    out_double = sizer.compute_size_usd(
+        100.0, 70.0, 4000.0, risk_per_trade_pct=0.005
+    )
+    assert out_double == pytest.approx(out_default * 2.0, rel=1e-3)

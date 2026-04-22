@@ -95,6 +95,11 @@ opportunity:
   final_score:
     min_submit_score: 0.12
     top_k_per_cycle: 12
+    min_submit_score_by_regime:
+      trending_up: 0.12
+      trending_down: 0.12
+      ranging: 0.12
+      risk_off: 0.12
   tiering:
     tier1_min_liq_mult: 1.0
     tier2_min_liq_mult: 0.42
@@ -124,6 +129,26 @@ opportunity:
       high_leverage_threshold_x: 5
       max_high_leverage_positions: 3
       max_high_leverage_gross_usd: 28000.0
+      regime_overrides:
+        enabled: true
+        by_regime:
+          trending_up:
+            max_high_leverage_positions_mult: 1.0
+            max_high_leverage_gross_mult: 1.0
+          trending_down:
+            max_high_leverage_positions_mult: 1.0
+            max_high_leverage_gross_mult: 1.0
+          ranging:
+            max_high_leverage_positions_mult: 1.0
+            max_high_leverage_gross_mult: 1.0
+          risk_off:
+            max_high_leverage_positions_mult: 1.0
+            max_high_leverage_gross_mult: 1.0
+        clamps:
+          max_high_leverage_positions_min: 0
+          max_high_leverage_positions_max: 5
+          max_high_leverage_gross_min: 0.0
+          max_high_leverage_gross_max: 50000.0
 
 research:
   enabled: true
@@ -480,6 +505,8 @@ regime:
   btc_4h_trend_threshold: 0.015
   btc_vol_trend_threshold: 0.006
   min_transition_interval_minutes: 15
+  transition:
+    early_phase_minutes: 20
   data_fetch_interval_seconds: 60
   ranging_classifier:
     htf_slope_lookback_bars: 24
@@ -543,6 +570,30 @@ risk:
   total_capital_usd: 10000
   max_portfolio_drawdown_24h: 0.05
   max_gross_multiplier: 1.5
+  regime_overrides:
+    enabled: true
+    by_regime:
+      trending_up:
+        max_gross_multiplier_mult: 1.0
+        risk_per_trade_mult: 1.0
+      trending_down:
+        max_gross_multiplier_mult: 1.0
+        risk_per_trade_mult: 1.0
+      ranging:
+        max_gross_multiplier_mult: 1.0
+        risk_per_trade_mult: 1.0
+      risk_off:
+        max_gross_multiplier_mult: 1.0
+        risk_per_trade_mult: 1.0
+    clamps:
+      max_gross_multiplier_min: 0.3
+      max_gross_multiplier_max: 2.0
+      risk_per_trade_min: 0.0005
+      risk_per_trade_max: 0.01
+  transition_overrides:
+    enabled: true
+    early_phase_gross_mult: 1.0
+    early_phase_risk_per_trade_mult: 1.0
   # null = no limit on correlated long count (tune later if needed).
   max_correlated_longs: null
   # null = no limit on correlated short count; integer = hard cap across all engines.

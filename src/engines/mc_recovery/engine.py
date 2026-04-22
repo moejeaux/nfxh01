@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -23,6 +24,7 @@ from src.opportunity.config_helpers import (
     opportunity_enabled,
     opportunity_enforce_ranking,
     opportunity_shadow_mode,
+    regime_opportunity_retro_metadata,
     require_valid_meta_snapshot,
 )
 from src.opportunity.leverage_policy import (
@@ -162,11 +164,13 @@ class MCRecoveryEngine:
         shadow = opportunity_shadow_mode(self._config)
         enforce = opportunity_enforce_ranking(self._config)
         opp_on = opportunity_enabled(self._config)
-        min_submit = float(
-            ((self._config.get("opportunity") or {}).get("final_score") or {}).get(
-                "min_submit_score", 0.0
-            )
+        trans_phase = self._regime.transition_phase(datetime.now(timezone.utc))
+        retro_base = regime_opportunity_retro_metadata(
+            self._config,
+            self._regime,
+            regime_value=regime_state.regime.value,
         )
+        eff_min = float(retro_base["effective_min_submit_score"])
         alpha_key = alpha_engine_key(ENGINE_ID)
         outcome_store = get_outcome_store(self._config)
         ranked_rows: list[tuple[float, tuple, dict[str, Any]]] = []
@@ -174,6 +178,7 @@ class MCRecoveryEngine:
             drop, key, rsi, ref_px, volr = row
             trace_id = str(uuid4())
             meta0: dict[str, Any] = {
+                **retro_base,
                 "opportunity_trace_id": trace_id,
                 "drawdown_from_high_pct": drop,
                 "rsi": rsi,
@@ -204,7 +209,7 @@ class MCRecoveryEngine:
                 meta0["final_score"] = res.final_score
                 meta0["market_tier"] = res.market_tier
                 meta0["alpha_audit"] = aud
-                submit_eligible = (not res.hard_reject) and (res.final_score >= min_submit)
+                submit_eligible = (not res.hard_reject) and (res.final_score >= eff_min)
                 if submit_eligible:
                     max_lv = (
                         int(ctx_row.max_leverage)
@@ -224,6 +229,8 @@ class MCRecoveryEngine:
                         proposed=lev_i,
                         new_notional_usd=size_usd,
                         cfg=self._config,
+                        regime_value=regime_state.regime.value,
+                        transition_phase=trans_phase,
                     )
                     meta0["leverage_proposal"] = lev_i
                 if outcome_store is not None:
@@ -249,7 +256,7 @@ class MCRecoveryEngine:
                             hard_reject_reason=res.hard_reject_reason,
                             submit_eligible=submit_eligible,
                             position_size_usd=float(size_usd),
-                            metadata={"alpha_audit": aud, "rsi": rsi, "volume_ratio": volr},
+                            metadata={**retro_base, "alpha_audit": aud, "rsi": rsi, "volume_ratio": volr},
                         )
                     )
                 if enforce:
@@ -260,10 +267,13 @@ class MCRecoveryEngine:
                             res.hard_reject_reason,
                         )
                         continue
-                    if res.final_score < min_submit:
+                    if res.final_score < eff_min:
                         logger.info(
-                            "MC_RECOVERY_OPPORTUNITY_DROP coin=%s reason=below_min_submit_score",
+                            "MC_RECOVERY_OPPORTUNITY_DROP coin=%s reason=below_min_submit_score "
+                            "final=%.4f effective_min_submit_score=%.4f",
                             key,
+                            res.final_score,
+                            eff_min,
                         )
                         continue
                     ranked_rows.append((res.final_score, row, meta0))

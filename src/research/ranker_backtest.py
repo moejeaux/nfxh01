@@ -7,6 +7,7 @@ from typing import Any
 
 from src.market_context.hl_meta_snapshot import PerpAssetRow
 from src.opportunity.alpha_normalize import normalize_engine_alpha
+from src.opportunity.config_helpers import effective_min_submit_score
 from src.opportunity.leverage_policy import propose_leverage
 from src.opportunity.ranker import rank_opportunity
 
@@ -88,9 +89,6 @@ def run_ranker_backtest(
     default_engine_id: str = "acevault",
     default_side: str = "long",
 ) -> RankerBacktestResult:
-    min_submit = float(
-        ((cfg.get("opportunity") or {}).get("final_score") or {}).get("min_submit_score", 0.0)
-    )
     replayed: list[dict[str, Any]] = []
     by_ts: dict[str, list[dict[str, Any]]] = {}
 
@@ -113,6 +111,7 @@ def run_ranker_backtest(
                 alpha = _f(row.get("signal_alpha"), 0.0)
             ctx = _row_to_ctx(row)
             regime_value = str(row.get("regime_value") or "ranging")
+            min_submit_row = effective_min_submit_score(cfg, regime_value)
             ranked = rank_opportunity(
                 engine_id=engine_id,
                 regime_value=regime_value,
@@ -129,7 +128,7 @@ def run_ranker_backtest(
                     asset_max_leverage=max(1, int(ctx.max_leverage)),
                     cfg=cfg,
                 )
-            submit_eligible = (not ranked.hard_reject) and ranked.final_score >= min_submit
+            submit_eligible = (not ranked.hard_reject) and ranked.final_score >= min_submit_row
             interim.append(
                 {
                     "timestamp": ts,

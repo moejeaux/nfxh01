@@ -155,14 +155,16 @@ async def build_context(config: dict) -> dict:
         universe_manager = Top25UniverseManager(hl_client, config)
         universe_manager.refresh()
 
+    regime_detector = RegimeDetector(config, data_fetcher=None)
+
     risk_layer = UnifiedRiskLayer(
         config,
         portfolio_state,
         kill_switch,
         btc_context_holder=btc_context_holder,
         universe_manager=universe_manager,
+        regime_detector=regime_detector,
     )
-    regime_detector = RegimeDetector(config, data_fetcher=None)
 
     cascade_forecaster: CascadeForecaster | None = None
     if (config.get("cascade_forecaster") or {}).get("enabled", False):

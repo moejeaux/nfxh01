@@ -7,16 +7,23 @@ from src.engines.acevault.acevault_metrics import incr_ranging_candidate, incr_r
 from src.engines.acevault.models import AceSignal, AltCandidate
 from src.exits.policy_config import resolve_engine_exit_config
 from src.regime.models import RegimeState, RegimeType
+from src.risk.effective_risk_params import resolve_effective_risk_per_trade_pct
 from src.risk.position_sizer import PositionSizer
 
 logger = logging.getLogger(__name__)
 
 
 class EntryManager:
-    def __init__(self, config: dict, portfolio_state: Any) -> None:
+    def __init__(
+        self,
+        config: dict,
+        portfolio_state: Any,
+        regime_detector: Any | None = None,
+    ) -> None:
         self._config = config
         self._acevault_cfg = config["acevault"]
         self._portfolio_state = portfolio_state
+        self._regime_detector = regime_detector
         self._position_sizer = PositionSizer(config)
         self._ranging_candidates_seen_this_cycle = 0
         self._ranging_candidates_blocked_by_structure_this_cycle = 0
@@ -374,8 +381,19 @@ class EntryManager:
     def _safe_compute_position_size(self, entry_price: float, stop_loss_price: float, coin: str) -> float:
         try:
             equity_usd = float((self._config.get("risk") or {})["total_capital_usd"])
+            regime = phase = None
+            if self._regime_detector is not None:
+                rv = self._regime_detector.current_regime_value()
+                regime = rv if rv else None
+                phase = self._regime_detector.transition_phase(datetime.now(timezone.utc))
+            eff_rpt = resolve_effective_risk_per_trade_pct(self._config, regime, phase)
             out = float(
-                self._position_sizer.compute_size_usd(entry_price, stop_loss_price, equity_usd)
+                self._position_sizer.compute_size_usd(
+                    entry_price,
+                    stop_loss_price,
+                    equity_usd,
+                    risk_per_trade_pct=eff_rpt,
+                )
             )
             return out
         except Exception:

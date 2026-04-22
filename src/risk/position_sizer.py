@@ -9,12 +9,23 @@ class PositionSizer:
     def __init__(self, config: dict) -> None:
         self.config = config
 
-    def compute_size_usd(self, entry_price: float, stop_loss_price: float, equity_usd: float) -> float:
+    def compute_size_usd(
+        self,
+        entry_price: float,
+        stop_loss_price: float,
+        equity_usd: float,
+        risk_per_trade_pct: float | None = None,
+    ) -> float:
         if equity_usd <= 0.0:
             raise ValueError("equity_usd must be positive")
         stop_distance_pct = self._compute_stop_distance_pct(entry_price, stop_loss_price)
         risk = self.config["risk"]
-        risk_budget_usd = equity_usd * float(risk["risk_per_trade_pct"])
+        rpt = (
+            float(risk_per_trade_pct)
+            if risk_per_trade_pct is not None
+            else float(risk["risk_per_trade_pct"])
+        )
+        risk_budget_usd = equity_usd * rpt
         raw_size_usd = risk_budget_usd / stop_distance_pct
         max_usd = float(risk["max_position_size_usd"])
         min_usd = float(risk["min_position_size_usd"])

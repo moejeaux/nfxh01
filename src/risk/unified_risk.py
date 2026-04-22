@@ -12,6 +12,7 @@ the nxfh01 contract surface), not a substitute for this portfolio gate.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from src.market.btc_context import (
@@ -21,6 +22,11 @@ from src.market.btc_context import (
     compute_btc_alignment,
 )
 from src.market.btc_context_holder import BTCMarketContextHolder
+from src.regime.detector import RegimeDetector
+from src.risk.effective_risk_params import (
+    resolve_effective_max_gross_multiplier,
+    resolve_effective_risk_per_trade_pct,
+)
 from src.risk.portfolio_state import PortfolioState, RiskDecision
 
 logger = logging.getLogger(__name__)
@@ -49,14 +55,17 @@ class UnifiedRiskLayer:
         kill_switch: Any,
         btc_context_holder: BTCMarketContextHolder | None = None,
         universe_manager: Any | None = None,
+        regime_detector: RegimeDetector | None = None,
     ) -> None:
         self._config = config
         self._portfolio_state = portfolio_state
         self._kill_switch = kill_switch
         self._btc_holder = btc_context_holder
         self._universe_manager = universe_manager
+        self._regime_detector = regime_detector
         self._risk_cfg = config.get("risk", {})
         self._safety_position_multiplier = 1.0
+        self._last_regime_effective_key: tuple[Any, ...] | None = None
 
     def set_safety_position_multiplier(self, m: float) -> None:
         self._safety_position_multiplier = float(m)
@@ -67,6 +76,41 @@ class UnifiedRiskLayer:
     @property
     def portfolio_state(self) -> PortfolioState:
         return self._portfolio_state
+
+    def _effective_risk_limits(self, now: datetime | None = None) -> tuple[float, float]:
+        now = now or datetime.now(timezone.utc)
+        if self._regime_detector is None:
+            return (
+                float(self._risk_cfg.get("max_gross_multiplier", 3.0)),
+                float(self._risk_cfg.get("risk_per_trade_pct", 0.0025)),
+            )
+        regime = self._regime_detector.current_regime_value() or None
+        if regime == "":
+            regime = None
+        phase = self._regime_detector.transition_phase(now)
+        eff_gross = resolve_effective_max_gross_multiplier(self._config, regime, phase)
+        eff_rpt = resolve_effective_risk_per_trade_pct(self._config, regime, phase)
+        return eff_gross, eff_rpt
+
+    def _maybe_log_regime_effective(self, now: datetime | None = None) -> None:
+        now = now or datetime.now(timezone.utc)
+        if self._regime_detector is None:
+            return
+        eff_gross, eff_rpt = self._effective_risk_limits(now)
+        regime = self._regime_detector.current_regime_value() or ""
+        phase = self._regime_detector.transition_phase(now)
+        key = (regime, phase, eff_gross, eff_rpt)
+        if key == self._last_regime_effective_key:
+            return
+        self._last_regime_effective_key = key
+        logger.info(
+            "RISK_REGIME_EFFECTIVE regime=%s transition_phase=%s eff_max_gross_mult=%.6f "
+            "eff_risk_per_trade_pct=%.6f",
+            regime,
+            phase,
+            eff_gross,
+            eff_rpt,
+        )
 
     def validate(self, signal: Any, engine_id: str) -> RiskDecision:
         if self._kill_switch.is_active(engine_id):
@@ -118,6 +162,8 @@ class UnifiedRiskLayer:
         if btc_early is not None:
             return btc_early
 
+        self._maybe_log_regime_effective()
+
         acp_cfg = self._config.get("acp") or {}
         min_trade = acp_cfg.get("min_trade_size_usd")
         if min_trade is not None:
@@ -149,7 +195,7 @@ class UnifiedRiskLayer:
 
         total_capital = self._risk_cfg.get("total_capital_usd", 10000)
         gross = self._portfolio_state.get_gross_exposure()
-        max_mult = self._risk_cfg.get("max_gross_multiplier", 3.0)
+        max_mult, _ = self._effective_risk_limits()
         if total_capital > 0 and (gross + signal.position_size_usd) / total_capital >= max_mult:
             logger.warning(
                 "RISK_REJECTED engine=%s reason=gross_exposure_limit gross=%.2f new=%.2f cap=%.2f",
@@ -383,7 +429,7 @@ class UnifiedRiskLayer:
         max_dd = self._risk_cfg.get("max_portfolio_drawdown_24h", 0.05)
         gross = self._portfolio_state.get_gross_exposure()
         total_capital = self._risk_cfg.get("total_capital_usd", 10000)
-        max_mult = self._risk_cfg.get("max_gross_multiplier", 3.0)
+        max_mult, _ = self._effective_risk_limits()
 
         breaches = []
         if dd >= max_dd:
@@ -405,7 +451,7 @@ class UnifiedRiskLayer:
     def get_available_capital(self, engine_id: str) -> float:
         total_capital = self._risk_cfg.get("total_capital_usd", 10000)
         gross = self._portfolio_state.get_gross_exposure()
-        max_mult = self._risk_cfg.get("max_gross_multiplier", 3.0)
+        max_mult, _ = self._effective_risk_limits()
         max_gross = total_capital * max_mult
         available = max_gross - gross
         return max(0.0, available)

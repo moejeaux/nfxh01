@@ -67,7 +67,40 @@ class RegimeDetector:
         self._config = config
         self._data_fetcher = data_fetcher
         self._current_regime: RegimeType | None = None
+        self._previous_regime: RegimeType | None = None
         self._last_transition_at: datetime | None = None
+        self._last_phase_banner_key: tuple[str, str] | None = None
+        self._last_effective_regime: RegimeType | None = None
+
+    def current_regime_value(self) -> str:
+        if self._last_effective_regime is not None:
+            return self._last_effective_regime.value
+        return self._current_regime.value if self._current_regime else ""
+
+    def previous_regime_value(self) -> str | None:
+        return self._previous_regime.value if self._previous_regime else None
+
+    def last_transition_at(self) -> datetime | None:
+        return self._last_transition_at
+
+    def time_since_last_transition_seconds(self, now: datetime) -> float:
+        if self._last_transition_at is None:
+            return float("inf")
+        return max(0.0, (now - self._last_transition_at).total_seconds())
+
+    def transition_phase(self, now: datetime | None = None) -> str:
+        now = now or datetime.now(timezone.utc)
+        if self._last_transition_at is None:
+            return "STABLE"
+        tr = (self._config.get("regime") or {}).get("transition") or {}
+        try:
+            early_min = float(tr.get("early_phase_minutes", 1.0e9))
+        except (TypeError, ValueError):
+            early_min = 1.0e9
+        minutes = (now - self._last_transition_at).total_seconds() / 60.0
+        if minutes < early_min:
+            return "EARLY_TRANSITION"
+        return "STABLE"
 
     def detect(self, market_data: dict) -> RegimeState:
         md: dict[str, Any] = dict(market_data)
@@ -110,12 +143,16 @@ class RegimeDetector:
             self._current_regime = new_regime
             self._last_transition_at = datetime.now(timezone.utc)
 
-        return RegimeState(
-            regime=self._current_regime or new_regime,
+        eff_reg = self._current_regime or new_regime
+        state = RegimeState(
+            regime=eff_reg,
             confidence=confidence,
             timestamp=datetime.now(timezone.utc),
             indicators_snapshot=md,
         )
+        self._last_effective_regime = eff_reg
+        self._maybe_log_transition_phase_banner()
+        return state
 
     def _apply_ranging_refinement(
         self,
@@ -284,7 +321,29 @@ class RegimeDetector:
 
         return False
 
+    def _maybe_log_transition_phase_banner(self) -> None:
+        now = datetime.now(timezone.utc)
+        regime_s = self.current_regime_value()
+        phase = self.transition_phase(now)
+        key = (regime_s, phase)
+        if key == self._last_phase_banner_key:
+            return
+        self._last_phase_banner_key = key
+        since_s = (
+            float("inf")
+            if self._last_transition_at is None
+            else self.time_since_last_transition_seconds(now)
+        )
+        since_disp = since_s if since_s != float("inf") else -1.0
+        logger.info(
+            "REGIME_TRANSITION_PHASE regime=%s phase=%s time_since_last_transition_s=%.1f",
+            regime_s,
+            phase,
+            since_disp,
+        )
+
     def _emit_transition(self, new_regime: RegimeType) -> RegimeTransition | None:
+        self._previous_regime = self._current_regime
         transition = RegimeTransition(
             from_regime=self._current_regime or RegimeType.RANGING,
             to_regime=new_regime,

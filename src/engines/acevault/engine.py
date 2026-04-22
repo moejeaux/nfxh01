@@ -20,6 +20,7 @@ from src.opportunity.config_helpers import (
     opportunity_enabled,
     opportunity_enforce_ranking,
     opportunity_shadow_mode,
+    regime_opportunity_retro_metadata,
 )
 from src.opportunity.leverage_policy import (
     apply_portfolio_leverage_caps,
@@ -67,7 +68,9 @@ class AceVaultEngine:
         self._open_positions: list[AcePosition] = []
         self._cycle_running: bool = False
         self._scanner = AltScanner(config, hl_client, meta_holder=meta_holder)
-        self._entry_manager = EntryManager(config, risk_layer.portfolio_state)
+        self._entry_manager = EntryManager(
+            config, risk_layer.portfolio_state, regime_detector=regime_detector
+        )
         self._exit_manager = ExitManager(config)
         self._cost_guard: CostGuard | None = None
         if isinstance(self._config.get("execution"), dict):
@@ -92,11 +95,13 @@ class AceVaultEngine:
             out = sorted(candidates, key=lambda c: c.weakness_score, reverse=True)[:max_cand]
             return [(c, {}) for c in out]
 
-        min_submit = float(
-            ((self._config.get("opportunity") or {}).get("final_score") or {}).get(
-                "min_submit_score", 0.0
-            )
+        trans_phase = self.regime_detector.transition_phase(datetime.now(timezone.utc))
+        retro_base = regime_opportunity_retro_metadata(
+            self._config,
+            self.regime_detector,
+            regime_value=regime_state.regime.value,
         )
+        eff_min = float(retro_base["effective_min_submit_score"])
         shadow = opportunity_shadow_mode(self._config)
         enforce = opportunity_enforce_ranking(self._config)
         rows: list[tuple[float, AltCandidate, dict[str, Any]]] = []
@@ -125,6 +130,7 @@ class AceVaultEngine:
                 shadow=shadow,
             )
             meta = {
+                **retro_base,
                 "symbol": c.coin,
                 "engine": "acevault",
                 "raw_score": float(c.weakness_score),
@@ -151,7 +157,7 @@ class AceVaultEngine:
                 "regime_summary": regime_state.regime.value,
                 "alpha_audit": aud,
             }
-            submit_eligible = (not res.hard_reject) and (res.final_score >= min_submit)
+            submit_eligible = (not res.hard_reject) and (res.final_score >= eff_min)
             if shadow or not enforce:
                 rows.append((c.weakness_score, c, meta))
             else:
@@ -162,14 +168,14 @@ class AceVaultEngine:
                         c.coin,
                         res.hard_reject_reason,
                     )
-                elif res.final_score < min_submit:
+                elif res.final_score < eff_min:
                     submit_eligible = False
                     logger.info(
                         "ACEVAULT_OPPORTUNITY_DROP coin=%s reason=below_min_submit_score "
-                        "final=%.4f min=%.4f",
+                        "final=%.4f effective_min_submit_score=%.4f",
                         c.coin,
                         res.final_score,
-                        min_submit,
+                        eff_min,
                     )
                 else:
                     max_lv = int(row.max_leverage) if row is not None and row.max_leverage > 0 else 1
@@ -186,6 +192,8 @@ class AceVaultEngine:
                         proposed=lev,
                         new_notional_usd=float(self._config["acevault"].get("default_position_size_usd", 25)),
                         cfg=self._config,
+                        regime_value=regime_state.regime.value,
+                        transition_phase=trans_phase,
                     )
                     meta["leverage_proposal"] = lev
                     rows.append((res.final_score, c, meta))
@@ -212,7 +220,7 @@ class AceVaultEngine:
                         hard_reject_reason=res.hard_reject_reason,
                         submit_eligible=bool(submit_eligible),
                         position_size_usd=float(self._config["acevault"].get("default_position_size_usd", 25)),
-                        metadata={"alpha_audit": aud},
+                        metadata={**retro_base, "alpha_audit": aud},
                     )
                 )
             if enforce and not shadow and not submit_eligible:

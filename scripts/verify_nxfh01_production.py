@@ -82,10 +82,14 @@ async def run_verification_cycle(config: dict, hl_client: Info) -> dict:
     if bool(ucfg.get("enabled", False)):
         universe_manager = Top25UniverseManager(hl_client, config)
         universe_manager.refresh()
-    risk_layer = UnifiedRiskLayer(
-        config, portfolio_state, kill_switch, universe_manager=universe_manager
-    )
     regime_detector = RegimeDetector(config, data_fetcher=None)
+    risk_layer = UnifiedRiskLayer(
+        config,
+        portfolio_state,
+        kill_switch,
+        universe_manager=universe_manager,
+        regime_detector=regime_detector,
+    )
     
     # Create AceVault engine (without degen_executor for verification)
     acevault_engine = AceVaultEngine(

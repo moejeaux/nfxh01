@@ -62,13 +62,14 @@ async def main() -> int:
         rate_config=hl_api,
     )
 
+    regime_detector = RegimeDetector(config, data_fetcher=None)
     risk_layer = UnifiedRiskLayer(
         config,
         portfolio_state,
         kill_switch,
         btc_context_holder=btc_context_holder,
+        regime_detector=regime_detector,
     )
-    regime_detector = RegimeDetector(config, data_fetcher=None)
     scanner = AltScanner(config, hl_client)
 
     report = ShadowReport()

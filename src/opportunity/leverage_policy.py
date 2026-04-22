@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping
 
+from src.opportunity.effective_leverage_caps import resolve_effective_high_leverage_caps
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,13 +113,15 @@ def apply_portfolio_leverage_caps(
     proposed: int,
     new_notional_usd: float,
     cfg: Mapping[str, Any],
+    regime_value: str | None = None,
+    transition_phase: str | None = None,
 ) -> int:
     """Reduce ``proposed`` if high-leverage portfolio caps would be exceeded."""
     lev = (cfg.get("opportunity") or {}).get("leverage") or {}
     pc = lev.get("portfolio_caps") or {}
     thr = int(max(1, _f(pc.get("high_leverage_threshold_x"), 5)))
-    max_pos = int(max(0, _f(pc.get("max_high_leverage_positions"), 3)))
-    max_gross = _f(pc.get("max_high_leverage_gross_usd"), 25000.0)
+    reg = regime_value if regime_value else None
+    max_pos, max_gross = resolve_effective_high_leverage_caps(cfg, reg, transition_phase)
     if proposed < thr:
         return proposed
     open_positions = portfolio_state.get_open_positions(engine_id=None)

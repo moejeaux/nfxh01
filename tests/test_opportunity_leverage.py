@@ -94,3 +94,55 @@ def test_portfolio_cap_reduces_leverage():
         cfg=cfg,
     )
     assert out < 8
+
+
+def test_portfolio_cap_regime_mult_clamps_leverage():
+    cfg = {
+        "opportunity": {
+            "leverage": {
+                "enabled": True,
+                "top_target_x": 10.0,
+                "tier_caps": {"tier1": 10.0, "tier2": 5.0, "tier3": 0.0},
+                "confidence_bands": {
+                    "elite_min_score": 0.6,
+                    "strong_min_score": 0.35,
+                    "medium_min_score": 0.18,
+                },
+                "by_band": {
+                    "1": {"elite": 10.0, "strong": 6.0, "medium": 4.0, "weak": 1.0},
+                    "2": {"elite": 4.0, "strong": 3.0, "medium": 2.0, "weak": 1.0},
+                },
+                "portfolio_caps": {
+                    "high_leverage_threshold_x": 5,
+                    "max_high_leverage_positions": 1,
+                    "max_high_leverage_gross_usd": 100000.0,
+                    "regime_overrides": {
+                        "enabled": True,
+                        "by_regime": {
+                            "ranging": {
+                                "max_high_leverage_positions_mult": 2.0,
+                                "max_high_leverage_gross_mult": 1.0,
+                            }
+                        },
+                        "clamps": {"max_high_leverage_positions_max": 1},
+                    },
+                },
+            }
+        }
+    }
+    ps = MagicMock()
+    ps.get_open_positions.return_value = [
+        _Pos("1", _Sig("A", "long", 500, leverage=8)),
+        _Pos("2", _Sig("B", "long", 500, leverage=8)),
+    ]
+    out = apply_portfolio_leverage_caps(
+        portfolio_state=ps,
+        engine_id="growi",
+        coin="C",
+        proposed=8,
+        new_notional_usd=100.0,
+        cfg=cfg,
+        regime_value="ranging",
+        transition_phase="STABLE",
+    )
+    assert out < 8
