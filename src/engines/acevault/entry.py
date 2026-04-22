@@ -3,6 +3,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from src.engines.acevault.acevault_metrics import incr_ranging_candidate, incr_reject
 from src.engines.acevault.models import AceSignal, AltCandidate
 from src.exits.policy_config import resolve_engine_exit_config
 from src.regime.models import RegimeState, RegimeType
@@ -16,23 +17,35 @@ class EntryManager:
         self._acevault_cfg = config["acevault"]
         self._portfolio_state = portfolio_state
 
+    def _ranging_trade_cfg(self) -> dict[str, Any]:
+        return (self._acevault_cfg.get("ranging_trade") or {})
+
     def should_enter(
         self, candidate: AltCandidate, regime: RegimeState, regime_weight: float
     ) -> AceSignal | None:
+        snap = regime.indicators_snapshot or {}
         gates = [
             ("weakness_gate", self._check_weakness_gate, (candidate, regime)),
             ("liquidity_gate", self._check_liquidity_gate, (candidate,)),
             ("regime_gate", self._check_regime_gate, (regime.regime, regime_weight)),
+            ("ranging_structure_gate", self._check_ranging_structure_gate, (regime, snap)),
             ("duplicate_gate", self._check_duplicate_gate, (candidate.coin,)),
+            ("ranging_geometry_gate", self._check_ranging_geometry_gate, (candidate, regime, snap)),
+            ("loss_cooldown_gate", self._check_loss_cooldown_gate, (candidate.coin,)),
+            ("reentry_reset_gate", self._check_reentry_reset_gate, (candidate,)),
+            ("cost_ratio_gate", self._check_cost_ratio_gate, (candidate, regime)),
             ("reentry_cooldown_gate", self._check_reentry_cooldown_gate, (candidate.coin,)),
             ("capacity_gate", self._check_capacity_gate, ()),
         ]
 
-        for gate_name, gate_fn, gate_args in gates:
+        for _gate_name, gate_fn, gate_args in gates:
             if not gate_fn(*gate_args):
                 return None
 
         signal = self._build_signal(candidate, regime)
+        getter = getattr(self._portfolio_state, "acevault_clear_reentry_watch", None)
+        if callable(getter):
+            getter(candidate.coin)
         logger.info(
             "ACEVAULT_SIGNAL_GENERATED coin=%s weakness=%.3f entry=%s stop=%s tp=%s",
             signal.coin,
@@ -42,6 +55,173 @@ class EntryManager:
             signal.take_profit_price,
         )
         return signal
+
+    def _check_ranging_structure_gate(self, regime: RegimeState, snap: dict[str, Any]) -> bool:
+        if regime.regime != RegimeType.RANGING:
+            return True
+        ok = bool(snap.get("ranging_structure_ok", True))
+        if not ok:
+            incr_reject("ranging_structure_gate")
+            logger.info(
+                "ACEVAULT_ENTRY_REJECTED coin=n/a gate=ranging_structure_gate reason=ranging_structure_ok_false",
+            )
+        return ok
+
+    def _check_ranging_geometry_gate(
+        self, candidate: AltCandidate, regime: RegimeState, snap: dict[str, Any]
+    ) -> bool:
+        if regime.regime != RegimeType.RANGING or not bool(snap.get("ranging_structure_ok", True)):
+            return True
+        incr_ranging_candidate()
+        rt = self._ranging_trade_cfg()
+        mid_frac = float(rt.get("midpoint_no_trade_fraction", 0.35))
+        edge_max = float(rt.get("min_distance_to_range_edge_for_entry", 0.15))
+        rh = candidate.range_high
+        rl = candidate.range_low
+        p = float(candidate.current_price)
+        if rh is None or rl is None:
+            incr_reject("edge_distance_gate")
+            logger.info(
+                "ACEVAULT_ENTRY_REJECTED coin=%s gate=ranging_geometry_gate reason=missing_range_geometry",
+                candidate.coin,
+            )
+            return False
+        width = float(rh) - float(rl)
+        if width <= 0:
+            return False
+        mid = 0.5 * (float(rh) + float(rl))
+        if abs(p - mid) <= mid_frac * width:
+            incr_reject("midpoint_gate")
+            logger.info(
+                "ACEVAULT_ENTRY_REJECTED coin=%s gate=midpoint_gate reason=inside_dead_zone width=%.8f",
+                candidate.coin,
+                width,
+            )
+            return False
+        side = "short"
+        du = candidate.dist_to_upper_frac
+        dl = candidate.dist_to_lower_frac
+        if side == "short":
+            if du is None or du > edge_max:
+                incr_reject("edge_distance_gate")
+                logger.info(
+                    "ACEVAULT_ENTRY_REJECTED coin=%s gate=edge_distance_gate reason=dist_to_upper_frac=%s max=%.4f",
+                    candidate.coin,
+                    du,
+                    edge_max,
+                )
+                return False
+        else:
+            if dl is None or dl > edge_max:
+                incr_reject("edge_distance_gate")
+                logger.info(
+                    "ACEVAULT_ENTRY_REJECTED coin=%s gate=edge_distance_gate reason=dist_to_lower_frac=%s max=%.4f",
+                    candidate.coin,
+                    dl,
+                    edge_max,
+                )
+                return False
+        return True
+
+    def _check_loss_cooldown_gate(self, coin: str) -> bool:
+        rt = self._ranging_trade_cfg()
+        bars = int(rt.get("bars_cooldown_after_loss", 0) or 0)
+        if bars <= 0:
+            return True
+        reasons = rt.get("loss_cooldown_exit_reasons") or ["stop_loss", "time_stop", "trailing_stop"]
+        bar_sec = float(rt.get("ranging_bar_interval_seconds", 300))
+        if self._portfolio_state is None:
+            return True
+        getter = getattr(self._portfolio_state, "get_last_closed_exit_for_engine_coin", None)
+        if not callable(getter):
+            return True
+        rec = getter("acevault", coin)
+        if rec is None:
+            return True
+        exit_obj = rec.get("exit")
+        reason = str(getattr(exit_obj, "exit_reason", "") or "")
+        pnl_pct = float(getattr(exit_obj, "pnl_pct", 0.0) or 0.0)
+        if pnl_pct >= 0.0 or reason not in set(str(x) for x in reasons):
+            return True
+        closed_at = rec.get("closed_at")
+        if not isinstance(closed_at, datetime):
+            return True
+        elapsed = (datetime.now(timezone.utc) - closed_at).total_seconds()
+        need = bars * bar_sec
+        if elapsed >= need:
+            return True
+        incr_reject("loss_cooldown_gate")
+        logger.info(
+            "ACEVAULT_ENTRY_REJECTED coin=%s gate=loss_cooldown_gate reason=%s bars=%d elapsed_s=%.0f need_s=%.0f",
+            coin,
+            reason,
+            bars,
+            elapsed,
+            need,
+        )
+        return False
+
+    def _check_reentry_reset_gate(self, candidate: AltCandidate) -> bool:
+        rt = self._ranging_trade_cfg()
+        if not bool(rt.get("reentry_reset_require_opposite_edge", False)):
+            return True
+        rh = candidate.range_high
+        rl = candidate.range_low
+        if rh is None or rl is None:
+            return True
+        buf = float(rt.get("reentry_reset_buffer_frac_of_width", 0.02))
+        getter = getattr(self._portfolio_state, "acevault_opposite_edge_touched", None)
+        if not callable(getter):
+            return True
+        if getter(candidate.coin, "short", float(rh), float(rl), buf):
+            return True
+        incr_reject("reset_gate")
+        logger.info(
+            "ACEVAULT_ENTRY_REJECTED coin=%s gate=reset_gate reason=opposite_edge_not_touched_since_loss",
+            candidate.coin,
+        )
+        return False
+
+    def _check_cost_ratio_gate(self, candidate: AltCandidate, regime: RegimeState) -> bool:
+        if regime.regime != RegimeType.RANGING or not bool(
+            (regime.indicators_snapshot or {}).get("ranging_structure_ok", True)
+        ):
+            return True
+        rt = self._ranging_trade_cfg()
+        ratio_min = float(rt.get("min_expected_move_to_cost_ratio", 0.0) or 0.0)
+        if ratio_min <= 0.0:
+            return True
+        rh = candidate.range_high
+        rl = candidate.range_low
+        p = float(candidate.current_price)
+        if rh is None or rl is None or p <= 0:
+            return True
+        ro = (self._acevault_cfg.get("exit_overrides") or {}).get("ranging") or {}
+        cap_r = float(ro.get("hard_target_r_cap", 0.0) or 0.0)
+        resolved = resolve_engine_exit_config(self._config, "acevault", "ranging")
+        sl_pct = float(resolved.get("stop_loss_distance_pct") or self._acevault_cfg["stop_loss_distance_pct"]) / 100.0
+        risk_pct = sl_pct
+        move_band = max(0.0, (p - float(rl)) / p)
+        move_cap = (cap_r * risk_pct) if cap_r > 0 else move_band
+        expected_move_pct = max(move_band, move_cap) * 100.0
+        fee = float(rt.get("taker_fee_roundtrip_pct", 0.07))
+        slip = float(rt.get("spread_slippage_budget_pct", 0.06))
+        cost_pct = fee + slip
+        if cost_pct <= 1e-12:
+            return True
+        r = expected_move_pct / cost_pct
+        if r >= ratio_min:
+            return True
+        incr_reject("cost_ratio_gate")
+        logger.info(
+            "ACEVAULT_ENTRY_REJECTED coin=%s gate=cost_ratio_gate reason=ratio=%.3f min=%.3f expected_move_pct=%.4f cost_pct=%.4f",
+            candidate.coin,
+            r,
+            ratio_min,
+            expected_move_pct,
+            cost_pct,
+        )
+        return False
 
     def _check_weakness_gate(self, candidate: AltCandidate, regime: RegimeState) -> bool:
         base_min = float(self._acevault_cfg["min_weakness_score"])
@@ -95,7 +275,6 @@ class EntryManager:
         return True
 
     def _stop_loss_reentry_cooldown_seconds(self) -> float:
-        """Effective cooldown in seconds: explicit ``reentry_stop_loss_cooldown_seconds`` if set, else candles×interval."""
         av = self._acevault_cfg
         explicit = av.get("reentry_stop_loss_cooldown_seconds")
         if explicit is not None:
@@ -166,10 +345,47 @@ class EntryManager:
         resolved = resolve_engine_exit_config(self._config, "acevault", regime_key)
         sl_pct = float(resolved.get("stop_loss_distance_pct") or self._acevault_cfg["stop_loss_distance_pct"]) / 100.0
         tp_pct = float(resolved.get("take_profit_distance_pct") or self._acevault_cfg.get("take_profit_distance_pct", 2.7)) / 100.0
-        stop_loss_price = entry_price * (1 + sl_pct)
+        rt = self._ranging_trade_cfg()
+        atr_m = float(rt.get("initial_stop_ATR_multiple", 0.0) or 0.0)
+        atr = float(candidate.atr or 0.0) if candidate.atr is not None else 0.0
+        sl_dist_pct = sl_pct
+        if atr_m > 0.0 and atr > 0.0 and entry_price > 0:
+            atr_pct_dist = (atr_m * atr) / entry_price
+            sl_dist_pct = max(sl_dist_pct, atr_pct_dist)
+        stop_loss_price = entry_price * (1 + sl_dist_pct)
         take_profit_price = entry_price * (1 - tp_pct)
+        rh = candidate.range_high
+        rl = candidate.range_low
+        if regime_key == "ranging" and rh is not None and rl is not None and float(rh) > float(rl):
+            width = float(rh) - float(rl)
+            buf = float(
+                ((self._acevault_cfg.get("exit_overrides") or {}).get("ranging") or {}).get(
+                    "range_target", {}
+                ).get("buffer_frac_of_width", 0.02)
+            )
+            band_tp = float(rl) + buf * width
+            take_profit_price = max(take_profit_price, band_tp)
         position_size_usd = self._acevault_cfg.get("default_position_size_usd", 100)
-
+        meta = {
+            "range_high": rh,
+            "range_low": rl,
+            "atr": candidate.atr,
+            "reference_atr": candidate.atr,
+            "ranging_bar_interval_seconds": float(rt.get("ranging_bar_interval_seconds", 300)),
+            "hard_target_r_cap": float(
+                ((self._acevault_cfg.get("exit_overrides") or {}).get("ranging") or {}).get(
+                    "hard_target_r_cap", 0.0
+                )
+                or 0.0
+            ),
+            "range_target_buffer_frac": float(
+                ((self._acevault_cfg.get("exit_overrides") or {}).get("ranging") or {}).get(
+                    "range_target", {}
+                ).get("buffer_frac_of_width", 0.02)
+            ),
+            "is_ranging_trade": regime_key == "ranging",
+            "ranging_structure_ok_entry": bool((regime.indicators_snapshot or {}).get("ranging_structure_ok", True)),
+        }
         return AceSignal(
             coin=candidate.coin,
             side="short",
@@ -180,4 +396,5 @@ class EntryManager:
             weakness_score=candidate.weakness_score,
             regime_at_entry=regime.regime.value,
             timestamp=datetime.now(timezone.utc),
+            metadata=meta,
         )

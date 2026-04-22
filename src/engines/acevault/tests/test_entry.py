@@ -22,6 +22,13 @@ def mock_config():
             "take_profit_distance_pct": 2.7,
             "max_concurrent_positions": 5,
             "default_position_size_usd": 150,
+            "ranging_trade": {
+                "min_expected_move_to_cost_ratio": 0.0,
+                "bars_cooldown_after_loss": 0,
+                "reentry_reset_require_opposite_edge": False,
+                "ranging_bar_interval_seconds": 300,
+            },
+            "exit_overrides": {"ranging": {"hard_target_r_cap": 2.0}},
         }
     }
 
@@ -63,7 +70,7 @@ def ranging_regime():
         regime=RegimeType.RANGING,
         confidence=0.7,
         timestamp=datetime.now(timezone.utc),
-        indicators_snapshot={},
+        indicators_snapshot={"ranging_structure_ok": True},
     )
 
 
@@ -399,7 +406,8 @@ def test_gate_reentry_allowed_after_cooldown_expires(
 ):
     mock_config["acevault"]["reentry_stop_loss_cooldown_seconds"] = 60
     t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-    seq = iter([t0, t0 + timedelta(seconds=120)])
+    t1 = t0 + timedelta(seconds=120)
+    seq = iter([t0, t1, t1, t1, t1])
 
     class _Dt:
         @staticmethod
@@ -459,9 +467,19 @@ class TestRegimeSpecificTPOverride:
                 "take_profit_distance_pct": 2.7,
                 "max_concurrent_positions": 5,
                 "default_position_size_usd": 100,
+                "ranging_trade": {
+                    "min_expected_move_to_cost_ratio": 0.0,
+                    "bars_cooldown_after_loss": 0,
+                    "reentry_reset_require_opposite_edge": False,
+                    "midpoint_no_trade_fraction": 0.35,
+                    "min_distance_to_range_edge_for_entry": 0.15,
+                    "ranging_bar_interval_seconds": 300,
+                },
                 "exit_overrides": {
                     "ranging": {
                         "take_profit_distance_pct": 1.0,
+                        "hard_target_r_cap": 2.0,
+                        "range_target": {"enabled": False},
                     },
                 },
             },
@@ -473,26 +491,33 @@ class TestRegimeSpecificTPOverride:
     def test_ranging_entry_uses_overridden_tp_distance(self, mock_portfolio_state):
         cfg = self._config_with_ranging_override()
         em = EntryManager(cfg, mock_portfolio_state)
+        px = 108.9
         candidate = AltCandidate(
             coin="SOL",
             weakness_score=0.5,
             relative_strength_1h=-0.02,
             momentum_score=0.3,
             volume_ratio=1.2,
-            current_price=100.0,
+            current_price=px,
             timestamp=datetime.now(timezone.utc),
+            range_high=110.0,
+            range_low=90.0,
+            range_width_pct=0.2,
+            atr=0.5,
+            dist_to_upper_frac=(110.0 - px) / 20.0,
+            dist_to_lower_frac=(px - 90.0) / 20.0,
         )
         regime = RegimeState(
             regime=RegimeType.RANGING,
             confidence=0.8,
             timestamp=datetime.now(timezone.utc),
-            indicators_snapshot={},
+            indicators_snapshot={"ranging_structure_ok": True},
         )
         signal = em.should_enter(candidate, regime, 0.6)
         assert signal is not None
-        expected_tp = 100.0 * (1 - 1.0 / 100.0)
+        expected_tp = px * (1 - 1.0 / 100.0)
         assert signal.take_profit_price == pytest.approx(expected_tp)
-        expected_sl = 100.0 * (1 + 0.28 / 100.0)
+        expected_sl = px * (1 + 0.28 / 100.0)
         assert signal.stop_loss_price == pytest.approx(expected_sl)
 
     def test_trending_down_entry_uses_default_tp_distance(self, mock_portfolio_state):

@@ -17,6 +17,14 @@ def mock_config():
             "btc_4h_trend_threshold": 0.015,
             "btc_vol_trend_threshold": 0.006,
             "min_transition_interval_minutes": 15,
+            "ranging_classifier": {
+                "max_trend_slope_for_range": 0.0008,
+                "min_range_width_relative_to_ATR": 1.35,
+                "min_recent_bounces_at_range_edges": 2,
+                "max_vol_expansion_for_range": 1.6,
+                "trend_agreement_min_slope_norm": 0.0002,
+                "trend_agreement_min_4h_return": 0.004,
+            },
         }
     }
 
@@ -43,7 +51,9 @@ def test_detect_risk_off(detector):
     assert result.regime == RegimeType.RISK_OFF
     assert result.confidence == 0.9
     assert isinstance(result, RegimeState)
-    assert result.indicators_snapshot == market_data
+    for k, v in market_data.items():
+        assert result.indicators_snapshot[k] == v
+    assert result.indicators_snapshot.get("ranging_structure_ok") is True
 
 
 def test_detect_trending_up(detector):
@@ -58,7 +68,8 @@ def test_detect_trending_up(detector):
     assert result.regime == RegimeType.TRENDING_UP
     assert result.confidence == 0.8
     assert isinstance(result, RegimeState)
-    assert result.indicators_snapshot == market_data
+    for k, v in market_data.items():
+        assert result.indicators_snapshot[k] == v
 
 
 def test_detect_trending_down(detector):
@@ -73,7 +84,8 @@ def test_detect_trending_down(detector):
     assert result.regime == RegimeType.TRENDING_DOWN
     assert result.confidence == 0.8
     assert isinstance(result, RegimeState)
-    assert result.indicators_snapshot == market_data
+    for k, v in market_data.items():
+        assert result.indicators_snapshot[k] == v
 
 
 def test_detect_ranging_default(detector):
@@ -88,7 +100,8 @@ def test_detect_ranging_default(detector):
     assert result.regime == RegimeType.RANGING
     assert result.confidence == 0.7
     assert isinstance(result, RegimeState)
-    assert result.indicators_snapshot == market_data
+    for k, v in market_data.items():
+        assert result.indicators_snapshot[k] == v
 
 
 @patch('src.regime.detector.datetime')
@@ -287,3 +300,52 @@ def test_detect_logs_regime_detected(detector, caplog):
         detector.detect(market_data)
     
     assert "REGIME_DETECTED regime=risk_off confidence=0.90" in caplog.text
+
+
+def test_strict_ranging_passes(detector):
+    md = {
+        "btc_1h_return": 0.001,
+        "btc_4h_return": 0.001,
+        "btc_vol_1h": 0.003,
+        "btc_htf_slope_norm": 0.0001,
+        "btc_range_width_pct": 0.05,
+        "btc_atr_pct": 0.02,
+        "btc_range_bounce_count": 3.0,
+        "btc_vol_expansion_ratio": 1.0,
+    }
+    rs = detector.detect(md)
+    assert rs.regime == RegimeType.RANGING
+    assert rs.indicators_snapshot.get("ranging_strict_passed") is True
+    assert rs.indicators_snapshot.get("ranging_structure_ok") is True
+
+
+def test_strict_ranging_demotes_to_trending_up(detector):
+    md = {
+        "btc_1h_return": 0.001,
+        "btc_4h_return": 0.01,
+        "btc_vol_1h": 0.003,
+        "btc_htf_slope_norm": 0.001,
+        "btc_range_width_pct": 0.01,
+        "btc_atr_pct": 0.02,
+        "btc_range_bounce_count": 0.0,
+        "btc_vol_expansion_ratio": 1.0,
+    }
+    rs = detector.detect(md)
+    assert rs.regime == RegimeType.TRENDING_UP
+    assert rs.indicators_snapshot.get("ranging_structure_ok") is False
+
+
+def test_strict_ranging_fails_stays_ranging_without_agreement(detector):
+    md = {
+        "btc_1h_return": 0.001,
+        "btc_4h_return": -0.001,
+        "btc_vol_1h": 0.003,
+        "btc_htf_slope_norm": 0.001,
+        "btc_range_width_pct": 0.01,
+        "btc_atr_pct": 0.02,
+        "btc_range_bounce_count": 0.0,
+        "btc_vol_expansion_ratio": 1.0,
+    }
+    rs = detector.detect(md)
+    assert rs.regime == RegimeType.RANGING
+    assert rs.indicators_snapshot.get("ranging_structure_ok") is False

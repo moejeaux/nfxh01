@@ -33,6 +33,11 @@ class ExitStateStore:
         take_profit_price: float,
         position_size_usd: float,
         opened_at: datetime,
+        reference_atr: float = 0.0,
+        bar_interval_seconds: float = 300.0,
+        range_high: float | None = None,
+        range_low: float | None = None,
+        range_target_buffer_frac: float = 0.02,
     ) -> PositionExitState:
         existing = self.get(position_id)
         if existing is not None:
@@ -56,6 +61,11 @@ class ExitStateStore:
             highest_price_seen=px0,
             lowest_price_seen=px0,
             peak_r_multiple=0.0,
+            reference_atr=float(reference_atr or 0.0),
+            bar_interval_seconds=float(bar_interval_seconds or 300.0),
+            range_high=range_high,
+            range_low=range_low,
+            range_target_buffer_frac=float(range_target_buffer_frac or 0.02),
         )
         self.upsert(st)
         return st

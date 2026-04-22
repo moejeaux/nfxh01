@@ -27,10 +27,14 @@ from src.opportunity.ranker import log_rank_line, rank_opportunity
 from src.calibration.opportunity_outcomes import get_outcome_store
 from src.calibration.schema import CandidateRankRecord, utc_iso_now
 from src.intelligence.topk_review import run_topk_advisory_review
+from src.market_data.hyperliquid_btc import fetch_real_market_data
 from src.regime.detector import RegimeDetector
 from src.regime.models import RegimeState, RegimeType
+from src.engines.acevault.acevault_metrics import log_entry_gate_snapshot
 
 logger = logging.getLogger(__name__)
+
+_METRICS_CYCLE_INTERVAL = 20
 
 
 class AceVaultEngine:
@@ -63,6 +67,7 @@ class AceVaultEngine:
         self._exit_manager = ExitManager(config)
         self._topk_review_calls_this_cycle = 0
         self._topk_review_call_times: list[datetime] = []
+        self._metrics_cycle_counter = 0
 
     def _acevault_opportunity_rows(
         self,
@@ -389,6 +394,9 @@ class AceVaultEngine:
         # --- exits first (always run, even if kill switch is active) ---
         current_prices = await self._fetch_current_prices()
         self._update_position_prices(current_prices)
+        ps = getattr(self.risk_layer, "portfolio_state", None)
+        if ps is not None and hasattr(ps, "acevault_reentry_mark_prices"):
+            ps.acevault_reentry_mark_prices(current_prices)
 
         exits = self._exit_manager.check_exits(
             self._open_positions,
@@ -397,6 +405,29 @@ class AceVaultEngine:
             confidence=regime_state.confidence,
         )
         for exit in exits:
+            pos_match = next(
+                (p for p in self._open_positions if p.position_id == exit.position_id),
+                None,
+            )
+            if pos_match is not None:
+                meta = getattr(pos_match.signal, "metadata", None) or {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                eps = 1e-9
+                pr = float(exit.peak_r_multiple or 0.0)
+                rr = float(exit.realized_r_multiple or 0.0)
+                cap = rr / max(pr, eps) if pr > eps else None
+                logger.info(
+                    "ACEVAULT_TRADE_R_METRICS coin=%s exit_reason=%s peak_r=%.6f realized_r=%.6f "
+                    "capture_ratio=%s regime_at_entry=%s is_ranging_trade=%s",
+                    exit.coin,
+                    exit.exit_reason,
+                    pr,
+                    rr,
+                    f"{cap:.6f}" if cap is not None else "None",
+                    getattr(pos_match.signal, "regime_at_entry", ""),
+                    meta.get("is_ranging_trade", False),
+                )
             try:
                 self.degen_executor.submit_close(
                     AcpCloseRequest(
@@ -655,6 +686,10 @@ class AceVaultEngine:
             len(self._open_positions),
         )
 
+        self._metrics_cycle_counter += 1
+        if self._metrics_cycle_counter % _METRICS_CYCLE_INTERVAL == 0:
+            log_entry_gate_snapshot()
+
         return results
 
     def _get_regime_weight(self, regime: RegimeType) -> float:
@@ -671,11 +706,19 @@ class AceVaultEngine:
                 ) * pos.signal.position_size_usd
 
     async def _fetch_market_data(self) -> dict:
-        return {
-            "btc_1h_return": 0.0,
-            "btc_4h_return": 0.0,
-            "btc_vol_1h": 0.004,
-        }
+        try:
+            rcfg = (self._config.get("regime") or {}).get("ranging_classifier")
+            return await fetch_real_market_data(
+                self._hl_client,
+                ranging_classifier_config=rcfg,
+            )
+        except Exception as e:
+            logger.warning("ACEVAULT_MARKET_DATA_FALLBACK error=%s", e)
+            return {
+                "btc_1h_return": 0.0,
+                "btc_4h_return": 0.0,
+                "btc_vol_1h": 0.004,
+            }
 
     async def _fetch_current_prices(self) -> dict[str, float]:
         try:

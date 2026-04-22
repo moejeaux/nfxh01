@@ -28,6 +28,11 @@ class PositionExitState:
     partial_exits_taken: int = 0
     trailing_armed: bool = False
     last_updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    reference_atr: float = 0.0
+    bar_interval_seconds: float = 300.0
+    range_high: float | None = None
+    range_low: float | None = None
+    range_target_buffer_frac: float = 0.02
 
 
 @dataclass

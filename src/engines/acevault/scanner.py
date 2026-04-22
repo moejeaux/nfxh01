@@ -205,6 +205,10 @@ class AltScanner:
 
         weakness_score = (-relative_strength_1h) + (-momentum_score)
 
+        rt = (self.config.get("acevault") or {}).get("ranging_trade") or {}
+        lookback = int(rt.get("range_geometry_lookback_bars", 24))
+        atr_period = int(rt.get("atr_period_bars", 14))
+        rh, rl, rw_pct, atr_v, du, dl = self._range_geometry(alt_df, lookback, atr_period)
         return AltCandidate(
             coin=coin,
             weakness_score=weakness_score,
@@ -213,4 +217,44 @@ class AltScanner:
             volume_ratio=volume_ratio,
             current_price=price_data.get(coin, 0.0),
             timestamp=datetime.now(timezone.utc),
+            range_high=rh,
+            range_low=rl,
+            range_width_pct=rw_pct,
+            atr=atr_v,
+            dist_to_upper_frac=du,
+            dist_to_lower_frac=dl,
         )
+
+    def _range_geometry(
+        self, alt_df: pd.DataFrame, lookback: int, atr_period: int
+    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
+        """Donchian-style band + ATR on *alt_df* closes (5m bars)."""
+        n = len(alt_df)
+        if n < max(lookback, atr_period + 2, 8):
+            return None, None, None, None, None, None
+        tail = alt_df.tail(lookback)
+        rh = float(tail["high"].max())
+        rl = float(tail["low"].min())
+        mid = 0.5 * (rh + rl)
+        width = rh - rl
+        if mid <= 0 or width <= 0:
+            return rh, rl, None, None, None, None
+        rw_pct = width / mid
+        px = float(alt_df["close"].iloc[-1])
+        du = (rh - px) / width
+        dl = (px - rl) / width
+        trs: list[float] = []
+        sub = alt_df.tail(max(lookback, atr_period + 2))
+        highs = sub["high"].astype(float)
+        lows = sub["low"].astype(float)
+        closes = sub["close"].astype(float)
+        prev_c = closes.shift(1)
+        tr1 = highs - lows
+        tr2 = (highs - prev_c).abs()
+        tr3 = (lows - prev_c).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1).iloc[1:]
+        if len(tr) < atr_period:
+            atr_v = None
+        else:
+            atr_v = float(tr.tail(atr_period).mean())
+        return rh, rl, rw_pct, atr_v, float(du), float(dl)

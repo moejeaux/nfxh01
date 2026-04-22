@@ -472,7 +472,10 @@ async def run_six_hour_retrospective(
         market_data: dict[str, Any]
         try:
             hl_for_fetch = hl_client if hl_client is not None else _make_hl_client(config)
-            market_data = await fetch_real_market_data(hl_for_fetch)
+            market_data = await fetch_real_market_data(
+                hl_for_fetch,
+                ranging_classifier_config=(config.get("regime") or {}).get("ranging_classifier"),
+            )
         except Exception as e:
             logger.warning("%s_MARKET_INIT_FAILED error=%s using_fallback", _RETRO_LOG, e)
             market_data = {

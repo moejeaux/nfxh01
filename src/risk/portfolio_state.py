@@ -40,6 +40,8 @@ class PortfolioState:
         self._positions: dict[str, dict[str, Any]] = {}
         self._closed_positions: list = []
         self._equity_history: list[tuple[datetime, float]] = []
+        # AceVault loss re-entry: track post-loss price extremes for opposite-edge reset (grep acevault_reentry).
+        self._acevault_reentry_watch: dict[str, dict[str, Any]] = {}
 
     def register_position(self, engine_id: str, position: Any) -> None:
         self._positions.setdefault(engine_id, {})[position.position_id] = position
@@ -68,6 +70,71 @@ class PortfolioState:
             "RISK_POSITION_CLOSED engine=%s pos=%s pnl=%.2f",
             engine_id, position_id, exit.pnl_usd,
         )
+        if engine_id == "acevault":
+            self._acevault_on_close(position, exit)
+
+    def _acevault_on_close(self, position: Any, exit: Any) -> None:
+        coin = str(getattr(getattr(position, "signal", None), "coin", "") or "").strip().upper()
+        if not coin:
+            return
+        pnl_pct = float(getattr(exit, "pnl_pct", 0.0) or 0.0)
+        if pnl_pct >= 0.0:
+            self._acevault_reentry_watch.pop(coin, None)
+            return
+        meta = getattr(position.signal, "metadata", None) or {}
+        xp = float(getattr(exit, "exit_price", 0.0) or 0.0)
+        self._acevault_reentry_watch[coin] = {
+            "closed_at": datetime.now(timezone.utc),
+            "exit_reason": str(getattr(exit, "exit_reason", "") or ""),
+            "pnl_pct": pnl_pct,
+            "range_high": meta.get("range_high"),
+            "range_low": meta.get("range_low"),
+            "side": str(getattr(position.signal, "side", "short") or "short"),
+            "high_since": xp,
+            "low_since": xp,
+        }
+
+    def acevault_reentry_mark_prices(self, prices: dict[str, float]) -> None:
+        for coin_key in list(self._acevault_reentry_watch.keys()):
+            px: float | None = None
+            for k, v in prices.items():
+                if str(k).strip().upper() == coin_key:
+                    try:
+                        px = float(v)
+                    except (TypeError, ValueError):
+                        px = None
+                    break
+            if px is None or px <= 0:
+                continue
+            row = self._acevault_reentry_watch[coin_key]
+            row["high_since"] = max(float(row.get("high_since", px)), px)
+            row["low_since"] = min(float(row.get("low_since", px)), px)
+
+    def acevault_clear_reentry_watch(self, coin: str) -> None:
+        self._acevault_reentry_watch.pop(str(coin).strip().upper(), None)
+
+    def acevault_opposite_edge_touched(
+        self,
+        coin: str,
+        side: str,
+        range_high: float,
+        range_low: float,
+        buffer_frac_of_width: float,
+    ) -> bool:
+        row = self._acevault_reentry_watch.get(str(coin).strip().upper())
+        if not row:
+            return True
+        rh = float(range_high)
+        rl = float(range_low)
+        width = rh - rl
+        if width <= 0:
+            return True
+        buf = float(buffer_frac_of_width) * width
+        hi = float(row.get("high_since", 0.0) or 0.0)
+        lo = float(row.get("low_since", 0.0) or 0.0)
+        if str(side).lower() == "short":
+            return lo <= rl + buf
+        return hi >= rh - buf
 
     def get_open_positions(self, engine_id: str | None = None) -> list:
         if engine_id is not None:

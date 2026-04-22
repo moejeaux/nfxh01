@@ -207,6 +207,32 @@ def _localhost_names() -> frozenset[str]:
     return frozenset({"127.0.0.1", "localhost", "::1"})
 
 
+def _routed_ipv4_hint() -> str | None:
+    """Best-effort primary IPv4 (often LAN) for 'open from another device' hints; no packets sent."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("203.0.113.1", 80))
+            ip = s.getsockname()[0]
+            return str(ip) if ip and not ip.startswith("127.") else None
+        finally:
+            s.close()
+    except OSError:
+        return None
+
+
+def _log_remote_browser_hint(port: int) -> None:
+    if not os.environ.get("SSH_CONNECTION"):
+        return
+    lan = _routed_ipv4_hint()
+    logger.info(
+        "DASHBOARD_SSH_HINT You are in SSH: a browser on your laptop is NOT this Mac. "
+        "Use http://%s:%d/ (this Mac's LAN IP) or pass --host 0.0.0.0 if you bound loopback only.",
+        lan or "<this-mac-LAN-IP>",
+        port,
+    )
+
+
 def run_server(*, host: str, port: int, dsn: str) -> None:
     _DashboardHandler.dsn = dsn
     host_norm = (host or "").strip().lower()
@@ -216,11 +242,12 @@ def run_server(*, host: str, port: int, dsn: str) -> None:
             logger.info(
                 "DASHBOARD_LISTEN mode=dual_stack_loopback port=%d "
                 "urls=http://127.0.0.1:%d/ http://[::1]:%d/ "
-                "(use 127.0.0.1 or [::1] if localhost fails)",
+                "(only reachable from this machine)",
                 port,
                 port,
                 port,
             )
+            _log_remote_browser_hint(port)
         except OSError as e:
             logger.warning(
                 "DASHBOARD_IPV6_BIND_FAILED error=%s fallback=127.0.0.1",
@@ -232,15 +259,32 @@ def run_server(*, host: str, port: int, dsn: str) -> None:
                 port,
                 port,
             )
+            _log_remote_browser_hint(port)
     else:
         server = ThreadingHTTPServer((host, port), _DashboardHandler)
+        lan = _routed_ipv4_hint()
         logger.info(
-            "DASHBOARD_LISTEN host=%s port=%d url=http://%s:%d/",
+            "DASHBOARD_LISTEN host=%s port=%d bind_all_ipv4=true "
+            "same_mac=http://127.0.0.1:%d/ "
+            "lan_hint=http://%s:%d/ "
+            "(use 127.0.0.1 on this Mac; http://localhost may use IPv6 and fail)",
             host,
             port,
-            host,
+            port,
+            lan or "<LAN-IP>",
             port,
         )
+        if lan:
+            logger.info(
+                "DASHBOARD_OPEN_FROM_OTHER_DEVICE On another PC/phone on the same Wi-Fi, open "
+                "http://%s:%d/",
+                lan,
+                port,
+            )
+        if os.environ.get("SSH_CONNECTION"):
+            logger.info(
+                "DASHBOARD_SSH_HINT Browser on your laptop: use the LAN URL above, not 127.0.0.1."
+            )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -261,9 +305,10 @@ def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="NXFH01 read-only positions dashboard (Postgres journal).")
     p.add_argument(
         "--host",
-        default="127.0.0.1",
-        help="Bind address (default loopback). For 127.0.0.1/localhost, uses IPv6 ::1 dual-stack so "
-        "http://localhost:PORT works on macOS; use 0.0.0.0 for LAN access.",
+        default="0.0.0.0",
+        help="Bind address. Default 0.0.0.0 = all IPv4 interfaces (reachable from other devices on "
+        "LAN; use http://THIS-MACHINE-LAN-IP:PORT). Use 127.0.0.1 for this machine only (dual-stack "
+        "IPv6 for http://localhost on macOS).",
     )
     p.add_argument("--port", type=int, default=8765, help="TCP port (default 8765).")
     p.add_argument(

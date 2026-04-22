@@ -25,7 +25,7 @@ universe:
 # When ``enabled: true`` and ``shadow_mode: false``, Top-25 is no longer the primary gate:
 # use ``emergency_universe.mode: strict_allowlist`` to re-enable allowlist blocking at risk layer.
 opportunity:
-  enabled: false
+  enabled: true
   shadow_mode: false
   context_refresh_seconds: 15
   require_valid_snapshot: true
@@ -240,14 +240,43 @@ acevault:
   reentry_stop_loss_cooldown_candles: 10
   reentry_stop_loss_candle_interval_seconds: 60
   reentry_stop_loss_cooldown_seconds: null
+  ranging_trade:
+    ranging_bar_interval_seconds: 300
+    range_geometry_lookback_bars: 24
+    atr_period_bars: 14
+    midpoint_no_trade_fraction: 0.35
+    min_distance_to_range_edge_for_entry: 0.15
+    bars_cooldown_after_loss: 8
+    loss_cooldown_exit_reasons:
+      - stop_loss
+      - time_stop
+      - trailing_stop
+    reentry_reset_require_opposite_edge: true
+    reentry_reset_buffer_frac_of_width: 0.02
+    min_expected_move_to_cost_ratio: 2.0
+    initial_stop_ATR_multiple: 1.1
+    taker_fee_roundtrip_pct: 0.07
+    spread_slippage_budget_pct: 0.06
   # Regime-specific exit overrides merge on top of global ``exits`` defaults.
   # Partial TP is capability-gated: setting enabled: true will fail validation
   # until ACP/DegenClaw exposes a sized partial-close contract.
   exit_overrides:
     ranging:
       take_profit_distance_pct: 1.0
+      breakeven_activation_R: 0.65
+      trailing_activation_R: 1.0
+      trailing_atr_multiple: 0.65
+      max_hold_bars_in_range: 10
+      hard_target_r_cap: 2.2
+      time_to_fail_bars_before_tighter_invalidation: 6
+      fail_fast:
+        max_progress_r: 0.15
+      range_target:
+        enabled: true
+        buffer_frac_of_width: 0.02
+        precedence: before_fixed_tp
       break_even:
-        trigger_r: 0.9
+        enabled: true
         offset_r: 0.10
       partial_tp:
         enabled: false
@@ -443,6 +472,19 @@ regime:
   btc_vol_trend_threshold: 0.006
   min_transition_interval_minutes: 15
   data_fetch_interval_seconds: 60
+  ranging_classifier:
+    htf_slope_lookback_bars: 24
+    max_trend_slope_for_range: 0.0008
+    range_lookback_bars: 24
+    atr_period_bars: 14
+    min_range_width_relative_to_ATR: 1.35
+    min_recent_bounces_at_range_edges: 2
+    bounce_edge_tolerance_frac: 0.12
+    max_vol_expansion_for_range: 1.6
+    expansion_short_bars: 4
+    expansion_long_bars: 24
+    trend_agreement_min_slope_norm: 0.0002
+    trend_agreement_min_4h_return: 0.004
 
 # ACP v2: Python calls the Node buyer service (services/acp-buyer) when ACP_SDK_URL is set.
 acp:

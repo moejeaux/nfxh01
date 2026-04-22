@@ -8,6 +8,7 @@ from typing import Any
 from src.exits.models import Side, UniversalExit
 from src.exits.policy_config import resolve_exit_policy
 from src.exits.policies import evaluate_exit, unrealized_r_multiple, update_extremes_and_peak
+from src.engines.acevault.acevault_metrics import record_exit_metrics
 from src.exits.state import ExitStateStore
 from src.regime.models import RegimeType
 
@@ -258,6 +259,19 @@ class LiveExitEngine:
                     "EXIT_SKIP_INCOMPLETE_STATE position_id=%s coin=%s", pos.position_id, coin
                 )
                 continue
+            md = getattr(sig, "metadata", None) or {}
+            if not isinstance(md, dict):
+                md = {}
+            ref_atr = float(md.get("reference_atr") or md.get("atr") or 0.0)
+            bar_sec = float(
+                md.get("ranging_bar_interval_seconds")
+                or (self._config.get("acevault") or {})
+                .get("ranging_trade", {})
+                .get("ranging_bar_interval_seconds", 300.0)
+            )
+            rng_hi = md.get("range_high")
+            rng_lo = md.get("range_low")
+            buf = float(md.get("range_target_buffer_frac") or 0.02)
             st = self._store.ensure_initial(
                 position_id=pos.position_id,
                 coin=coin,
@@ -268,6 +282,11 @@ class LiveExitEngine:
                 take_profit_price=tp,
                 position_size_usd=size_usd,
                 opened_at=pos.opened_at,
+                reference_atr=ref_atr,
+                bar_interval_seconds=bar_sec,
+                range_high=float(rng_hi) if rng_hi is not None else None,
+                range_low=float(rng_lo) if rng_lo is not None else None,
+                range_target_buffer_frac=buf,
             )
             update_extremes_and_peak(st, price)
             ev = evaluate_exit(
@@ -304,6 +323,12 @@ class LiveExitEngine:
                     realized_r,
                     f"{capture:.4f}" if capture is not None else "None",
                 )
+                if engine_id == "acevault":
+                    record_exit_metrics(
+                        exit_reason=str(ev.exit_reason),
+                        realized_r=realized_r,
+                        peak_r=peak_r,
+                    )
                 out.append(
                     UniversalExit(
                         position_id=pos.position_id,

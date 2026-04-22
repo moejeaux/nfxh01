@@ -13,6 +13,12 @@ class AltCandidate:
     volume_ratio: float
     current_price: float
     timestamp: datetime
+    range_high: float | None = None
+    range_low: float | None = None
+    range_width_pct: float | None = None
+    atr: float | None = None
+    dist_to_upper_frac: float | None = None
+    dist_to_lower_frac: float | None = None
 
 
 @dataclass
