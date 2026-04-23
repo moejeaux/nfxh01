@@ -328,7 +328,8 @@ acevault:
         min_progress_r: 0.30
 
 growi_hf:
-  default_position_size_usd: 20
+  # Must clear acp.min_trade_size_usd after risk.safety_mode.position_multiplier (e.g. 25×0.45 > 11).
+  default_position_size_usd: 25
   stop_loss_distance_pct: 0.35
   take_profit_distance_pct: 1.2
   rsi_period: 14
@@ -524,7 +525,8 @@ regime:
 
 # ACP v2: Python calls the Node buyer service (services/acp-buyer) when ACP_SDK_URL is set.
 acp:
-  min_trade_size_usd: 10
+  # UnifiedRiskLayer + DegenClaw both enforce this floor on post-multiplier USD size (> $10).
+  min_trade_size_usd: 11
   http_timeout_seconds: 120
   offering_name: perp_trade
   sdk_url: ""

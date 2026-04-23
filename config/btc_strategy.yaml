@@ -23,12 +23,13 @@ supervisor:
 
 lanes:
   trend:
-    position_size_usd: 12.0
+    # Same floor as growi_hf: safety_mode mult × size must stay ≥ acp.min_trade_size_usd.
+    position_size_usd: 25.0
     stop_atr_5m_mult: 1.6
     take_profit_r: 1.0
     range_high_lookback_bars: 14
   regression:
-    position_size_usd: 8.0
+    position_size_usd: 25.0
     stop_atr_5m_mult: 1.2
     take_profit_r: 1.0
     rsi_period: 14

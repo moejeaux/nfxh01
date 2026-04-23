@@ -93,7 +93,7 @@ class GrowiHFEngine:
         rsi_period = int(gh.get("rsi_period", 14))
         oversold = float(gh.get("rsi_oversold", 30.0))
         overbought = float(gh.get("rsi_overbought", 70.0))
-        size_usd = float(gh.get("default_position_size_usd", 20.0))
+        size_usd = float(gh.get("default_position_size_usd", 25.0))
         sl_pct = float(gh.get("stop_loss_distance_pct", 0.35))
         tp_pct = float(gh.get("take_profit_distance_pct", 1.2))
         lev = int(st.get("default_leverage", 1))
