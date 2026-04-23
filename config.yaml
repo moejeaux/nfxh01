@@ -217,7 +217,7 @@ strategies:
     enabled: true
     engine_id: mc
     cycle_interval_seconds: 120
-    max_candidates: 3
+    max_candidates: 10
     default_leverage: 1
   btc_lanes:
     enabled: true
