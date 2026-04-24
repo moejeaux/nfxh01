@@ -30,6 +30,11 @@ universe:
   block_new_entries_outside_universe: true
   allow_exit_management_outside_universe: true
 
+# 2026-04-23: regime v1 tweaks
+# - De-emphasize growi & mc in ranging regimes at opportunity + risk layers
+# - Raise min_submit_score in ranging
+# - Leave trending_down behavior unchanged
+#
 # Shared market-aware opportunity pipeline (AceVault, Growi HF, MC Recovery).
 # When ``enabled: true`` and ``shadow_mode: false``, Top-25 is no longer the primary gate:
 # use ``emergency_universe.mode: strict_allowlist`` to re-enable allowlist blocking at risk layer.
@@ -77,11 +82,11 @@ opportunity:
         panic: 0.85
       growi:
         trending: 1.0
-        ranging: 1.08
+        ranging: 0.9
         panic: 0.92
       mc:
         trending: 0.98
-        ranging: 1.0
+        ranging: 0.9
         panic: 1.02
   cost:
     impact_k: 12.0
@@ -98,7 +103,7 @@ opportunity:
     min_submit_score_by_regime:
       trending_up: 0.12
       trending_down: 0.12
-      ranging: 0.12
+      ranging: 0.16
       risk_off: 0.12
   tiering:
     tier1_min_liq_mult: 1.0
@@ -340,6 +345,7 @@ growi_hf:
   # Each coin = one candles_snapshot POST; keep modest vs HL limits (AceVault already scans many coins).
   max_coins_to_evaluate: 40
   max_concurrent_positions: 4
+  # Growi underperforms in ranging (shadow); tighter opportunity/risk multipliers instead of removing ranging from allow (for now).
   regime_allow:
     - ranging
     - trending_down
@@ -359,6 +365,7 @@ mc_recovery:
   min_volume_ratio: 0.85
   max_coins_to_evaluate: 40
   max_concurrent_positions: 2
+  # MC is marginal in ranging (shadow); slightly de-emphasized via shared opportunity/risk config.
   regime_allow:
     - trending_down
     - risk_off
@@ -582,8 +589,8 @@ risk:
         max_gross_multiplier_mult: 1.0
         risk_per_trade_mult: 1.0
       ranging:
-        max_gross_multiplier_mult: 1.0
-        risk_per_trade_mult: 1.0
+        max_gross_multiplier_mult: 0.9
+        risk_per_trade_mult: 0.8
       risk_off:
         max_gross_multiplier_mult: 1.0
         risk_per_trade_mult: 1.0
@@ -592,6 +599,7 @@ risk:
       max_gross_multiplier_max: 2.0
       risk_per_trade_min: 0.0005
       risk_per_trade_max: 0.01
+  # early_phase_* may be tuned per regime when more data exists; ranging-only haircut is in regime_overrides.by_regime above.
   transition_overrides:
     enabled: true
     early_phase_gross_mult: 1.0
