@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
@@ -572,3 +574,115 @@ class TestRegimeSpecificTPOverride:
         assert signal is not None
         expected_tp = 100.0 * (1 - 2.7 / 100.0)
         assert signal.take_profit_price == pytest.approx(expected_tp)
+
+
+def _acevault_profitability_subtree() -> dict:
+    return {
+        "enabled": True,
+        "atr_init_mult": 1.6,
+        "trending_up": {
+            "block_between_low": 1.0,
+            "block_between_high": 2.0,
+            "preferred_low": 2.0,
+            "preferred_high": 3.0,
+            "size_mult_below_block": 0.85,
+            "size_mult_preferred": 1.10,
+            "size_mult_above_preferred": 1.00,
+        },
+        "trending_down": {
+            "preferred_max_weakness": 1.5,
+            "reduce_size_above": 1.5,
+            "block_above": 2.5,
+            "size_mult_preferred": 0.95,
+            "size_mult_reduced": 0.75,
+        },
+    }
+
+
+@pytest.fixture
+def profit_enabled_config(mock_config):
+    c = copy.deepcopy(mock_config)
+    c["acevault"]["acevault_profitability"] = _acevault_profitability_subtree()
+    return c
+
+
+def test_profitability_blocks_trending_up_mid_weakness(
+    profit_enabled_config, mock_portfolio_state, caplog
+):
+    em = EntryManager(profit_enabled_config, mock_portfolio_state)
+    candidate = AltCandidate(
+        coin="ARB",
+        weakness_score=1.5,
+        relative_strength_1h=-0.02,
+        momentum_score=0.3,
+        volume_ratio=1.2,
+        current_price=100.0,
+        timestamp=datetime.now(timezone.utc),
+        atr=0.5,
+    )
+    regime = RegimeState(
+        regime=RegimeType.TRENDING_UP,
+        confidence=0.8,
+        timestamp=datetime.now(timezone.utc),
+        indicators_snapshot={},
+    )
+    with caplog.at_level("INFO"):
+        sig = em.should_enter(candidate, regime, 0.5)
+    assert sig is None
+    assert "gate=acevault_profitability" in caplog.text
+    assert "blocked" in caplog.text
+
+
+def test_profitability_atr_initial_stop_capped_trending_down(
+    profit_enabled_config, mock_portfolio_state
+):
+    em = EntryManager(profit_enabled_config, mock_portfolio_state)
+    px = 100.0
+    candidate = AltCandidate(
+        coin="ARB",
+        weakness_score=2.0,
+        relative_strength_1h=-0.02,
+        momentum_score=0.3,
+        volume_ratio=1.2,
+        current_price=px,
+        timestamp=datetime.now(timezone.utc),
+        atr=1.0,
+    )
+    regime = RegimeState(
+        regime=RegimeType.TRENDING_DOWN,
+        confidence=0.8,
+        timestamp=datetime.now(timezone.utc),
+        indicators_snapshot={},
+    )
+    sig = em.should_enter(candidate, regime, 0.9)
+    assert sig is not None
+    cap_px = px * (1.0 + 0.3 / 100.0)
+    assert sig.stop_loss_price == pytest.approx(cap_px)
+    assert sig.metadata.get("acevault_init_stop_distance_units") == "price_abs"
+    assert sig.metadata.get("acevault_init_stop_distance") == pytest.approx(sig.stop_loss_price - px)
+
+
+def test_profitability_disabled_matches_legacy_stop(mock_config, mock_portfolio_state):
+    mock_config = copy.deepcopy(mock_config)
+    mock_config["acevault"]["acevault_profitability"] = {"enabled": False}
+    em = EntryManager(mock_config, mock_portfolio_state)
+    candidate = AltCandidate(
+        coin="ARB",
+        weakness_score=1.5,
+        relative_strength_1h=-0.02,
+        momentum_score=0.3,
+        volume_ratio=1.2,
+        current_price=100.0,
+        timestamp=datetime.now(timezone.utc),
+        atr=5.0,
+    )
+    regime = RegimeState(
+        regime=RegimeType.TRENDING_UP,
+        confidence=0.8,
+        timestamp=datetime.now(timezone.utc),
+        indicators_snapshot={},
+    )
+    sig = em.should_enter(candidate, regime, 0.5)
+    assert sig is not None
+    assert sig.stop_loss_price == pytest.approx(100.0 * (1.0 + 0.3 / 100.0))
+    assert "acevault_bucket" not in (sig.metadata or {})

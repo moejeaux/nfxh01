@@ -212,6 +212,11 @@ strategies:
         min_confidence_before_close_all: 0.75
         min_consecutive_trending_up_observations: 3
         mass_exit_cooldown_seconds: 300
+      acevault_exit_routing:
+        enabled: false
+        evaluate_time_stop_after_trailing: true
+        time_stop_min_progress_r: 0.3
+        time_stop_full_exit_max_r: 0.5
   growi_hf:
     enabled: true
     engine_id: growi
@@ -279,6 +284,33 @@ acevault:
   reentry_stop_loss_cooldown_candles: 15
   reentry_stop_loss_candle_interval_seconds: 60
   reentry_stop_loss_cooldown_seconds: null
+  # AceVault-only profitability routing (entry sizing/gating, ATR initial stop cap, exit tick order).
+  # Default off: no change to live behavior until enabled.
+  acevault_profitability:
+    enabled: false
+    atr_period: 14
+    atr_init_mult: 1.6
+    atr_trail_mult: 2.2
+    trail_activation_r: 0.5
+    # Canonical time-stop horizon when profitability + exit routing are both enabled (seconds).
+    time_stop_seconds_base: 2400
+    time_stop_partial_exit_enabled: true
+    time_stop_partial_exit_ratio: 0.5
+    move_stop_to_breakeven_after_partial: true
+    trending_up:
+      block_between_low: 1.0
+      block_between_high: 2.0
+      preferred_low: 2.0
+      preferred_high: 3.0
+      size_mult_below_block: 0.85
+      size_mult_preferred: 1.10
+      size_mult_above_preferred: 1.00
+    trending_down:
+      preferred_max_weakness: 1.5
+      reduce_size_above: 1.5
+      block_above: 2.5
+      size_mult_preferred: 0.95
+      size_mult_reduced: 0.75
   ranging_trade:
     ranging_bar_interval_seconds: 300
     range_geometry_lookback_bars: 24

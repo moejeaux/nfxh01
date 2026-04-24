@@ -3,6 +3,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from src.engines.acevault.adaptive_entry_policy import AdaptiveEntryDecision, classify_adaptive_entry
 from src.engines.acevault.acevault_metrics import incr_ranging_candidate, incr_reject
 from src.engines.acevault.models import AceSignal, AltCandidate
 from src.exits.policy_config import resolve_engine_exit_config
@@ -43,6 +44,12 @@ class EntryManager:
     def _ranging_trade_cfg(self) -> dict[str, Any]:
         return (self._acevault_cfg.get("ranging_trade") or {})
 
+    def _profitability_cfg(self) -> dict[str, Any]:
+        return (self._acevault_cfg.get("acevault_profitability") or {})
+
+    def _profitability_enabled(self) -> bool:
+        return bool(self._profitability_cfg().get("enabled"))
+
     def should_enter(
         self, candidate: AltCandidate, regime: RegimeState, regime_weight: float
     ) -> AceSignal | None:
@@ -66,7 +73,28 @@ class EntryManager:
             if not gate_fn(*gate_args):
                 return None
 
-        signal = self._build_signal(candidate, regime)
+        prof: AdaptiveEntryDecision | None = None
+        if self._profitability_enabled():
+            prof = classify_adaptive_entry(
+                regime.regime,
+                candidate.weakness_score,
+                self._profitability_cfg(),
+            )
+            if prof.decision == "blocked":
+                logger.info(
+                    "ACEVAULT_ENTRY_REJECTED coin=%s gate=acevault_profitability "
+                    "strategy_variant=acevault acevault_bucket=%s "
+                    "acevault_regime_filter_decision=blocked acevault_size_multiplier_reason=%s "
+                    "weakness=%.4f regime=%s",
+                    candidate.coin,
+                    prof.bucket,
+                    prof.reason,
+                    candidate.weakness_score,
+                    regime.regime.value,
+                )
+                return None
+
+        signal = self._build_signal(candidate, regime, prof)
         getter = getattr(self._portfolio_state, "acevault_clear_reentry_watch", None)
         if callable(getter):
             getter(candidate.coin)
@@ -78,6 +106,22 @@ class EntryManager:
             signal.stop_loss_price,
             signal.take_profit_price,
         )
+        if prof is not None:
+            md = signal.metadata or {}
+            logger.info(
+                "ACEVAULT_SIGNAL_PROFITABILITY_META coin=%s strategy_variant=%s "
+                "acevault_bucket=%s acevault_regime_filter_decision=%s "
+                "acevault_size_multiplier_reason=%s acevault_trailing_enabled=%s "
+                "acevault_atr_value=%s acevault_init_stop_distance=%s",
+                signal.coin,
+                md.get("strategy_variant"),
+                md.get("acevault_bucket"),
+                md.get("acevault_regime_filter_decision"),
+                md.get("acevault_size_multiplier_reason"),
+                md.get("acevault_trailing_enabled"),
+                md.get("acevault_atr_value"),
+                md.get("acevault_init_stop_distance"),
+            )
         return signal
 
     def _check_ranging_structure_gate(
@@ -409,7 +453,12 @@ class EntryManager:
             )
             return fb
 
-    def _build_signal(self, candidate: AltCandidate, regime: RegimeState) -> AceSignal:
+    def _build_signal(
+        self,
+        candidate: AltCandidate,
+        regime: RegimeState,
+        adaptive: AdaptiveEntryDecision | None = None,
+    ) -> AceSignal:
         entry_price = candidate.current_price
         regime_key = regime.regime.value
         resolved = resolve_engine_exit_config(self._config, "acevault", regime_key)
@@ -422,7 +471,23 @@ class EntryManager:
         if atr_m > 0.0 and atr > 0.0 and entry_price > 0:
             atr_pct_dist = (atr_m * atr) / entry_price
             sl_dist_pct = max(sl_dist_pct, atr_pct_dist)
-        stop_loss_price = entry_price * (1 + sl_dist_pct)
+
+        use_trending_atr_stop = (
+            self._profitability_enabled()
+            and adaptive is not None
+            and regime.regime in (RegimeType.TRENDING_UP, RegimeType.TRENDING_DOWN)
+            and atr > 0.0
+            and entry_price > 0.0
+        )
+        if use_trending_atr_stop:
+            ap = self._profitability_cfg()
+            atr_init = float(ap["atr_init_mult"])
+            atr_stop = float(entry_price) + atr_init * atr
+            cap_px = float(entry_price) * (1.0 + sl_pct)
+            stop_loss_price = min(atr_stop, cap_px)
+        else:
+            stop_loss_price = float(entry_price) * (1.0 + sl_dist_pct)
+
         take_profit_price = entry_price * (1 - tp_pct)
         rh = candidate.range_high
         rl = candidate.range_low
@@ -438,7 +503,12 @@ class EntryManager:
         position_size_usd = self._safe_compute_position_size(
             float(entry_price), float(stop_loss_price), candidate.coin
         )
-        meta = {
+        if self._profitability_enabled() and adaptive is not None:
+            sm = float(adaptive.size_multiplier)
+            if sm > 0.0:
+                position_size_usd *= sm
+
+        meta: dict[str, Any] = {
             "range_high": rh,
             "range_low": rl,
             "atr": candidate.atr,
@@ -458,6 +528,16 @@ class EntryManager:
             "is_ranging_trade": regime_key == "ranging",
             "ranging_structure_ok_entry": bool((regime.indicators_snapshot or {}).get("ranging_structure_ok", True)),
         }
+        if self._profitability_enabled() and adaptive is not None:
+            init_dist = abs(float(stop_loss_price) - float(entry_price))
+            meta["strategy_variant"] = "acevault"
+            meta["acevault_bucket"] = adaptive.bucket
+            meta["acevault_regime_filter_decision"] = adaptive.decision
+            meta["acevault_size_multiplier_reason"] = adaptive.reason
+            meta["acevault_trailing_enabled"] = bool(adaptive.trailing_preferred)
+            meta["acevault_atr_value"] = float(atr) if candidate.atr is not None else None
+            meta["acevault_init_stop_distance"] = float(init_dist)
+            meta["acevault_init_stop_distance_units"] = "price_abs"
         return AceSignal(
             coin=candidate.coin,
             side="short",

@@ -4,6 +4,8 @@ from unittest.mock import patch
 import pytest
 
 from src.engines.acevault.exit import ExitManager
+from src.exits.policies import evaluate_exit, update_extremes_and_peak
+from src.exits.state import ExitStateStore
 from src.engines.acevault.models import AcePosition, AceSignal
 from src.exits.manager import TrendingUpMassExitGate
 from src.regime.models import RegimeType
@@ -382,3 +384,70 @@ def test_mass_exit_integration_min_seconds_via_clock_patch():
         out2 = em.check_exits(positions, prices, RegimeType.TRENDING_UP, confidence=0.88)
         assert len(out2) == 1
         assert all(e.exit_reason == "regime_shift" for e in out2)
+
+
+def test_evaluate_exit_growi_hf_ignores_acevault_exit_routing():
+    """Non-AceVault strategy_key must use default exit ordering even if policy contains keys."""
+    store = ExitStateStore()
+    opened = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    st = store.ensure_initial(
+        position_id="growi-x",
+        coin="ETH",
+        side="short",
+        strategy_key="growi_hf",
+        entry_price=100.0,
+        initial_stop_price=100.5,
+        take_profit_price=90.0,
+        position_size_usd=500.0,
+        opened_at=opened,
+    )
+    pol = {
+        "time_stop": {"enabled": True, "minutes": 1, "min_progress_r": 0.5},
+        "trailing": {"enabled": True, "activate_at_r": 0.01, "distance_r": 0.5},
+        "hard_stop": {"enabled": True},
+        "acevault_exit_routing": {"enabled": True, "time_stop_full_exit_max_r": 0.5},
+    }
+    now = opened + timedelta(minutes=5)
+    ev = evaluate_exit(st, 99.9, pol, now=now, regime_exit_all=False)
+    assert ev.should_exit is True
+    assert ev.exit_reason == "time_stop"
+
+
+def test_evaluate_exit_acevault_routing_reorders_time_stop_after_trailing():
+    store = ExitStateStore()
+    opened = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    st = store.ensure_initial(
+        position_id="av-x",
+        coin="ETH",
+        side="short",
+        strategy_key="acevault",
+        entry_price=100.0,
+        initial_stop_price=100.5,
+        take_profit_price=90.0,
+        position_size_usd=500.0,
+        opened_at=opened,
+        reference_atr=0.5,
+    )
+    pol = {
+        "time_stop": {"enabled": True, "minutes": 1, "min_progress_r": 0.5},
+        "trailing": {"enabled": True, "activate_at_r": 0.5, "trailing_atr_multiple": 0.2},
+        "hard_stop": {"enabled": True},
+        "break_even": {"enabled": False},
+        "acevault_exit_routing": {
+            "enabled": True,
+            "evaluate_time_stop_after_trailing": True,
+            "time_stop_full_exit_max_r": 0.5,
+        },
+        "acevault_profitability_snapshot": {
+            "time_stop_partial_exit_enabled": True,
+            "move_stop_to_breakeven_after_partial": True,
+            "time_stop_partial_exit_ratio": 0.5,
+        },
+    }
+    now = opened + timedelta(minutes=5)
+    update_extremes_and_peak(st, 100.0)
+    update_extremes_and_peak(st, 99.0)
+    update_extremes_and_peak(st, 99.4)
+    ev = evaluate_exit(st, 99.55, pol, now=now, regime_exit_all=False)
+    assert ev.should_exit is True
+    assert ev.exit_reason == "trailing_stop"

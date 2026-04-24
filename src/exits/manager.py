@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -248,7 +249,38 @@ class LiveExitEngine:
                 policy_cache[entry_regime] = resolve_exit_policy(
                     self._config, sk, regime=entry_regime
                 )
-            policy = policy_cache[entry_regime]
+            policy = copy.deepcopy(policy_cache[entry_regime])
+            if engine_id == "acevault" and sk == "acevault":
+                av = self._config.get("acevault") or {}
+                ap = av.get("acevault_profitability") or {}
+                strat = (self._config.get("strategies") or {}).get("acevault") or {}
+                aer = (strat.get("exits") or {}).get("acevault_exit_routing") or {}
+                if bool(ap.get("enabled")) and bool(aer.get("enabled")):
+                    policy["acevault_exit_routing"] = dict(aer)
+                    base_sec = float(ap.get("time_stop_seconds_base") or 0.0)
+                    ts = dict(policy.get("time_stop") or {})
+                    if base_sec > 0:
+                        ts["minutes"] = base_sec / 60.0
+                    policy["time_stop"] = ts
+                    tr = dict(policy.get("trailing") or {})
+                    tr["activate_at_r"] = float(
+                        ap.get("trail_activation_r", tr.get("activate_at_r", 0.8))
+                    )
+                    tr["trailing_atr_multiple"] = float(
+                        ap.get("atr_trail_mult", tr.get("trailing_atr_multiple", 0.0) or 0.0)
+                    )
+                    policy["trailing"] = tr
+                    policy["acevault_profitability_snapshot"] = {
+                        "time_stop_partial_exit_enabled": bool(
+                            ap.get("time_stop_partial_exit_enabled")
+                        ),
+                        "move_stop_to_breakeven_after_partial": bool(
+                            ap.get("move_stop_to_breakeven_after_partial")
+                        ),
+                        "time_stop_partial_exit_ratio": float(
+                            ap.get("time_stop_partial_exit_ratio") or 0.5
+                        ),
+                    }
             side = _side_from_signal(sig)
             entry = float(getattr(sig, "entry_price", 0) or 0)
             sl = float(getattr(sig, "stop_loss_price", 0) or 0)

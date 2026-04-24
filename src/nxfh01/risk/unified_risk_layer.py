@@ -27,7 +27,19 @@ def _canonical_stop(intent: OrderIntent, distance_pct: Decimal) -> AceVaultStop:
 
 class UnifiedRiskLayer:
     def __init__(self, config: Mapping[str, Any]) -> None:
+        self._config = config
         self._ace_distance_pct = Decimal(str(config["acevault"]["stop_loss_distance_pct"]))
+
+    def _acevault_profitability_enabled(self) -> bool:
+        av = self._config.get("acevault") or {}
+        return bool((av.get("acevault_profitability") or {}).get("enabled"))
+
+    def _acevault_initial_stop_cap_pct(self) -> Decimal:
+        av = self._config.get("acevault") or {}
+        raw = av.get("max_initial_stop_distance_pct")
+        if raw is not None:
+            return Decimal(str(raw))
+        return self._ace_distance_pct
 
     def validate(self, intent: OrderIntent) -> RiskDecision:
         if intent.bypass_risk:
@@ -38,12 +50,24 @@ class UnifiedRiskLayer:
             if intent.acevault_stop is None:
                 log_risk_rejected("ACEVAULT_STOP_REQUIRED", engine=int(intent.engine_id))
                 return RiskDecision(allowed=False, reason_code="ACEVAULT_STOP_REQUIRED")
-            if intent.acevault_stop.distance_pct != self._ace_distance_pct:
-                log_risk_rejected("ACEVAULT_STOP_CONFIG_MISMATCH", engine=int(intent.engine_id))
-                return RiskDecision(allowed=False, reason_code="ACEVAULT_STOP_CONFIG_MISMATCH")
-            canon = _canonical_stop(intent, self._ace_distance_pct)
-            if intent.acevault_stop.stop_px != canon.stop_px:
-                log_risk_rejected("STOP_NOT_CANONICAL", engine=int(intent.engine_id))
-                return RiskDecision(allowed=False, reason_code="STOP_NOT_CANONICAL")
+
+            if self._acevault_profitability_enabled():
+                cap_pct = self._acevault_initial_stop_cap_pct()
+                d = intent.acevault_stop.distance_pct
+                if d > cap_pct:
+                    log_risk_rejected("ACEVAULT_STOP_EXCEEDS_CAP", engine=int(intent.engine_id))
+                    return RiskDecision(allowed=False, reason_code="ACEVAULT_STOP_EXCEEDS_CAP")
+                canon = _canonical_stop(intent, d)
+                if intent.acevault_stop.stop_px != canon.stop_px:
+                    log_risk_rejected("STOP_NOT_CANONICAL", engine=int(intent.engine_id))
+                    return RiskDecision(allowed=False, reason_code="STOP_NOT_CANONICAL")
+            else:
+                if intent.acevault_stop.distance_pct != self._ace_distance_pct:
+                    log_risk_rejected("ACEVAULT_STOP_CONFIG_MISMATCH", engine=int(intent.engine_id))
+                    return RiskDecision(allowed=False, reason_code="ACEVAULT_STOP_CONFIG_MISMATCH")
+                canon = _canonical_stop(intent, self._ace_distance_pct)
+                if intent.acevault_stop.stop_px != canon.stop_px:
+                    log_risk_rejected("STOP_NOT_CANONICAL", engine=int(intent.engine_id))
+                    return RiskDecision(allowed=False, reason_code="STOP_NOT_CANONICAL")
 
         return RiskDecision(allowed=True, reason_code="OK")
