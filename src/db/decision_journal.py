@@ -243,15 +243,13 @@ class DecisionJournal:
                     """
                     UPDATE trade_attribution SET
                         exit_config_version_id = $2::uuid,
-                        exit_config_hash = $3,
-                        exit_experiment_tags = $4::text[],
-                        exit_release_tag = $5,
+                        exit_experiment_tags = $3::text[],
+                        exit_release_tag = $4,
                         updated_at = NOW()
                     WHERE trade_table = 'acevault' AND trade_id = $1::uuid
                     """,
                     decision_id,
                     ev_id if ev_id else None,
-                    attr.get("exit_config_hash"),
                     xtags,
                     xrt,
                 )
@@ -360,15 +358,13 @@ class DecisionJournal:
                     """
                     UPDATE trade_attribution SET
                         exit_config_version_id = $2::uuid,
-                        exit_config_hash = $3,
-                        exit_experiment_tags = $4::text[],
-                        exit_release_tag = $5,
+                        exit_experiment_tags = $3::text[],
+                        exit_release_tag = $4,
                         updated_at = NOW()
                     WHERE trade_table = 'track_a' AND trade_id = $1::uuid
                     """,
                     position_id,
                     ev_id if ev_id else None,
-                    attr.get("exit_config_hash"),
                     xtags,
                     xrt,
                 )
