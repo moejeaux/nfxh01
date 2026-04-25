@@ -27,6 +27,11 @@ from src.opportunity.leverage_policy import (
     propose_leverage,
 )
 from src.opportunity.ranker import log_rank_line, rank_opportunity
+from src.config_intelligence.stamping import (
+    build_entry_attribution,
+    build_exit_attribution,
+    stamp_trades_enabled,
+)
 from src.calibration.opportunity_outcomes import get_outcome_store
 from src.calibration.schema import CandidateRankRecord, utc_iso_now
 from src.intelligence.topk_review import run_topk_advisory_review
@@ -487,10 +492,17 @@ class AceVaultEngine:
                             log_kw["realized_exit_price"] = xm["realized_exit_price"]
                         if xm.get("gross_pnl_usd") is not None:
                             log_kw["gross_pnl_usd"] = xm["gross_pnl_usd"]
+                    exit_attr = None
+                    if stamp_trades_enabled(self._config):
+                        exit_attr = build_exit_attribution(
+                            self._config,
+                            safety_position_multiplier=self.risk_layer.get_safety_position_multiplier(),
+                        )
                     await self._journal.log_exit(
                         decision_id=exit.position_id,
                         exit=exit,
                         regime_at_close=regime_state.regime.value,
+                        attribution=exit_attr,
                         **log_kw,
                     )
                     logger.info(
@@ -779,10 +791,20 @@ class AceVaultEngine:
                                 exp_entry_kw = float(raw_exp)
                             except (TypeError, ValueError):
                                 exp_entry_kw = None
+                    entry_attr = None
+                    if stamp_trades_enabled(self._config):
+                        meta = signal.metadata if isinstance(signal.metadata, dict) else {}
+                        entry_attr = build_entry_attribution(
+                            self._config,
+                            safety_position_multiplier=self.risk_layer.get_safety_position_multiplier(),
+                            signal_source=None,
+                            signal_metadata=meta,
+                        )
                     decision_id = await self._journal.log_entry(
                         signal=signal,
                         fathom_result=fathom_result,
                         expected_entry_price=exp_entry_kw,
+                        attribution=entry_attr,
                     )
                     logger.info(
                         "DECISION_JOURNAL_ENTRY_LOGGED id=%s coin=%s regime=%s",

@@ -87,3 +87,5 @@ CREATE TABLE IF NOT EXISTS learning_change_records (
 );
 
 CREATE INDEX IF NOT EXISTS idx_learning_change_created ON learning_change_records (created_at DESC);
+
+-- Full config intelligence DDL: src/db/migrations/008_config_intelligence.sql

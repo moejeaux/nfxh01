@@ -78,6 +78,11 @@ class DecisionJournal:
         self._outcome_store = None
         self._acevault_extended_columns_ready = False
 
+    @property
+    def pool(self) -> Any:
+        """Asyncpg pool for config intelligence registration (optional consumers)."""
+        return self._pool
+
     def is_connected(self) -> bool:
         return self._pool is not None
 
@@ -138,6 +143,243 @@ class DecisionJournal:
         self._acevault_extended_columns_ready = True
         logger.info("DECISION_JOURNAL_EXTENDED_COLUMNS ensured=true")
 
+    async def _apply_acevault_entry_attribution(
+        self, decision_id: str, attr: dict[str, Any]
+    ) -> None:
+        if self._pool is None:
+            return
+        ev_id = attr.get("entry_config_version_id")
+        sig = attr.get("signal_source")
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE acevault_decisions SET
+                        entry_config_version_id = $2::uuid,
+                        entry_config_hash = $3,
+                        signal_source = COALESCE($4, signal_source),
+                        execution_context_entry = $5,
+                        safety_position_multiplier_entry = $6,
+                        venue = $7
+                    WHERE id = $1::uuid
+                    """,
+                    decision_id,
+                    ev_id if ev_id else None,
+                    attr.get("entry_config_hash"),
+                    sig,
+                    attr.get("execution_context_entry"),
+                    attr.get("safety_position_multiplier_entry"),
+                    attr.get("venue"),
+                )
+                tags = attr.get("entry_experiment_tags") or []
+                if not isinstance(tags, list):
+                    tags = []
+                rt = attr.get("entry_release_tag")
+                tier = str(attr.get("attribution_tier") or "exact")
+                cohorts = (
+                    attr.get("cohorts") if isinstance(attr.get("cohorts"), dict) else {}
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO trade_attribution (
+                        trade_table, trade_id,
+                        entry_config_version_id, entry_experiment_tags, entry_release_tag,
+                        attribution_tier, cohorts,
+                        created_at, updated_at
+                    ) VALUES (
+                        'acevault', $1::uuid, $2::uuid, $3::text[], $4, $5, $6::jsonb, NOW(), NOW()
+                    )
+                    ON CONFLICT (trade_table, trade_id) DO UPDATE SET
+                        entry_config_version_id = EXCLUDED.entry_config_version_id,
+                        entry_experiment_tags = EXCLUDED.entry_experiment_tags,
+                        entry_release_tag = EXCLUDED.entry_release_tag,
+                        attribution_tier = EXCLUDED.attribution_tier,
+                        cohorts = EXCLUDED.cohorts,
+                        updated_at = NOW()
+                    """,
+                    decision_id,
+                    ev_id if ev_id else None,
+                    tags,
+                    rt,
+                    tier,
+                    json.dumps(cohorts, ensure_ascii=False, default=str),
+                )
+        except Exception as e:
+            logger.warning(
+                "DECISION_JOURNAL_ATTRIBUTION_ENTRY_FAILED decision_id=%s error=%s",
+                decision_id,
+                e,
+                exc_info=True,
+            )
+
+    async def _apply_acevault_exit_attribution(
+        self, decision_id: str, attr: dict[str, Any]
+    ) -> None:
+        if self._pool is None:
+            return
+        ev_id = attr.get("exit_config_version_id")
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE acevault_decisions SET
+                        exit_config_version_id = $2::uuid,
+                        exit_config_hash = $3,
+                        execution_context_exit = $4,
+                        safety_position_multiplier_exit = $5
+                    WHERE id = $1::uuid
+                    """,
+                    decision_id,
+                    ev_id if ev_id else None,
+                    attr.get("exit_config_hash"),
+                    attr.get("execution_context_exit"),
+                    attr.get("safety_position_multiplier_exit"),
+                )
+                xtags = attr.get("exit_experiment_tags") or []
+                if not isinstance(xtags, list):
+                    xtags = []
+                xrt = attr.get("exit_release_tag")
+                await conn.execute(
+                    """
+                    UPDATE trade_attribution SET
+                        exit_config_version_id = $2::uuid,
+                        exit_config_hash = $3,
+                        exit_experiment_tags = $4::text[],
+                        exit_release_tag = $5,
+                        updated_at = NOW()
+                    WHERE trade_table = 'acevault' AND trade_id = $1::uuid
+                    """,
+                    decision_id,
+                    ev_id if ev_id else None,
+                    attr.get("exit_config_hash"),
+                    xtags,
+                    xrt,
+                )
+        except Exception as e:
+            logger.warning(
+                "DECISION_JOURNAL_ATTRIBUTION_EXIT_FAILED decision_id=%s error=%s",
+                decision_id,
+                e,
+                exc_info=True,
+            )
+
+    async def _apply_track_a_entry_attribution(
+        self, position_id: str, attr: dict[str, Any]
+    ) -> None:
+        if self._pool is None:
+            return
+        ev_id = attr.get("entry_config_version_id")
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE strategy_decisions SET
+                        entry_config_version_id = $2::uuid,
+                        entry_config_hash = $3,
+                        execution_context_entry = $4,
+                        safety_position_multiplier_entry = $5,
+                        venue = $6
+                    WHERE id = $1::uuid
+                    """,
+                    position_id,
+                    ev_id if ev_id else None,
+                    attr.get("entry_config_hash"),
+                    attr.get("execution_context_entry"),
+                    attr.get("safety_position_multiplier_entry"),
+                    attr.get("venue"),
+                )
+                tags = attr.get("entry_experiment_tags") or []
+                if not isinstance(tags, list):
+                    tags = []
+                rt = attr.get("entry_release_tag")
+                tier = str(attr.get("attribution_tier") or "exact")
+                cohorts = (
+                    attr.get("cohorts") if isinstance(attr.get("cohorts"), dict) else {}
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO trade_attribution (
+                        trade_table, trade_id,
+                        entry_config_version_id, entry_experiment_tags, entry_release_tag,
+                        attribution_tier, cohorts,
+                        created_at, updated_at
+                    ) VALUES (
+                        'track_a', $1::uuid, $2::uuid, $3::text[], $4, $5, $6::jsonb, NOW(), NOW()
+                    )
+                    ON CONFLICT (trade_table, trade_id) DO UPDATE SET
+                        entry_config_version_id = EXCLUDED.entry_config_version_id,
+                        entry_experiment_tags = EXCLUDED.entry_experiment_tags,
+                        entry_release_tag = EXCLUDED.entry_release_tag,
+                        attribution_tier = EXCLUDED.attribution_tier,
+                        cohorts = EXCLUDED.cohorts,
+                        updated_at = NOW()
+                    """,
+                    position_id,
+                    ev_id if ev_id else None,
+                    tags,
+                    rt,
+                    tier,
+                    json.dumps(cohorts, ensure_ascii=False, default=str),
+                )
+        except Exception as e:
+            logger.warning(
+                "DECISION_JOURNAL_ATTRIBUTION_TRACK_A_ENTRY_FAILED position_id=%s error=%s",
+                position_id,
+                e,
+                exc_info=True,
+            )
+
+    async def _apply_track_a_exit_attribution(
+        self, position_id: str, attr: dict[str, Any]
+    ) -> None:
+        if self._pool is None:
+            return
+        ev_id = attr.get("exit_config_version_id")
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE strategy_decisions SET
+                        exit_config_version_id = $2::uuid,
+                        exit_config_hash = $3,
+                        execution_context_exit = $4,
+                        safety_position_multiplier_exit = $5
+                    WHERE id = $1::uuid
+                    """,
+                    position_id,
+                    ev_id if ev_id else None,
+                    attr.get("exit_config_hash"),
+                    attr.get("execution_context_exit"),
+                    attr.get("safety_position_multiplier_exit"),
+                )
+                xtags = attr.get("exit_experiment_tags") or []
+                if not isinstance(xtags, list):
+                    xtags = []
+                xrt = attr.get("exit_release_tag")
+                await conn.execute(
+                    """
+                    UPDATE trade_attribution SET
+                        exit_config_version_id = $2::uuid,
+                        exit_config_hash = $3,
+                        exit_experiment_tags = $4::text[],
+                        exit_release_tag = $5,
+                        updated_at = NOW()
+                    WHERE trade_table = 'track_a' AND trade_id = $1::uuid
+                    """,
+                    position_id,
+                    ev_id if ev_id else None,
+                    attr.get("exit_config_hash"),
+                    xtags,
+                    xrt,
+                )
+        except Exception as e:
+            logger.warning(
+                "DECISION_JOURNAL_ATTRIBUTION_TRACK_A_EXIT_FAILED position_id=%s error=%s",
+                position_id,
+                e,
+                exc_info=True,
+            )
+
     async def log_entry(
         self,
         signal: AceSignal,
@@ -145,6 +387,7 @@ class DecisionJournal:
         *,
         expected_entry_price: float | None = None,
         realized_entry_price: float | None = None,
+        attribution: dict[str, Any] | None = None,
     ) -> str:
         """Insert entry decision into acevault_decisions table, return UUID as string."""
         if self._pool is None:
@@ -258,6 +501,8 @@ class DecisionJournal:
                     metadata=om,
                 )
             )
+        if attribution:
+            await self._apply_acevault_entry_attribution(decision_id, attribution)
         return decision_id
 
     async def log_track_a_entry(
@@ -270,6 +515,7 @@ class DecisionJournal:
         idempotency_key: str,
         leverage_used: int,
         submitted_position_size_usd: float | None = None,
+        attribution: dict[str, Any] | None = None,
     ) -> str:
         """Persist a Track A entry decision; ``position_id`` aligns with ``PortfolioState`` registration."""
         if self._pool is None:
@@ -322,6 +568,8 @@ class DecisionJournal:
             intent.strategy_key,
             job_id,
         )
+        if attribution:
+            await self._apply_track_a_entry_attribution(rid, attribution)
         trace_id = meta.get("opportunity_trace_id")
         if self._outcome_store is not None:
             self._outcome_store.record_trade_outcome(
@@ -356,7 +604,11 @@ class DecisionJournal:
         return rid
 
     async def log_track_a_exit(
-        self, *, position_id: str, exit: UniversalExit
+        self,
+        *,
+        position_id: str,
+        exit: UniversalExit,
+        attribution: dict[str, Any] | None = None,
     ) -> None:
         """Persist a Track A close into ``strategy_decisions`` (row id == position_id)."""
         if self._pool is None:
@@ -439,6 +691,8 @@ class DecisionJournal:
                     metadata={"exit_reason": exit.exit_reason, "peak_r_capture_ratio": capture_ratio},
                 )
             )
+        if attribution:
+            await self._apply_track_a_exit_attribution(position_id, attribution)
 
     async def log_exit(
         self,
@@ -455,6 +709,7 @@ class DecisionJournal:
         slippage_exit_usd: float | None = None,
         gross_pnl_usd: float | None = None,
         net_pnl_usd: float | None = None,
+        attribution: dict[str, Any] | None = None,
     ) -> None:
         """Update decision record with exit information."""
         if self._pool is None:
@@ -575,6 +830,8 @@ class DecisionJournal:
             f"{capture_ratio:.4f}" if capture_ratio is not None else "None",
             f"{fee_paid_usd:.6f}" if fee_paid_usd is not None else "None",
         )
+        if attribution:
+            await self._apply_acevault_exit_attribution(decision_id, attribution)
         if self._outcome_store is not None:
             om: dict[str, Any] = {
                 "exit_reason": exit.exit_reason,

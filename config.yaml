@@ -648,3 +648,22 @@ risk:
     min_closed_trades: 40
     min_profit_factor_before_leaving_safety_mode: 1.08
     min_avg_win_loss_ratio: 1.1
+
+# Config attribution registry (Postgres). Thresholds live here — not hardcoded in analytics SQL.
+config_intelligence:
+  enabled: true
+  stamp_trades: true
+  environment: "live"
+  venue: "hyperliquid"
+  sample_thresholds:
+    insufficient_below: 20
+    caution_below: 50
+  category_prefixes:
+    - prefix: "risk.safety_mode"
+      category: "safety_mode"
+    - prefix: "opportunity."
+      category: "entry_filter"
+    - prefix: "acevault."
+      category: "policy"
+  semantic_bundles: []
+  cohort_defaults: {}

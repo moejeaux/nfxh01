@@ -16,6 +16,10 @@ from typing import Any
 from src.acp.degen_claw import AcpTradeRequest
 from src.nxfh01.orchestration.track_a_models import TrackAOpenPosition, TrackARiskSignal
 from src.nxfh01.orchestration.types import NormalizedEntryIntent
+from src.config_intelligence.stamping import (
+    build_entry_attribution,
+    stamp_trades_enabled,
+)
 from src.risk.portfolio_state import PortfolioState
 from src.risk.unified_risk import UnifiedRiskLayer
 
@@ -186,6 +190,14 @@ class TrackAExecutor:
 
             if self._journal is not None:
                 try:
+                    entry_attr = None
+                    if stamp_trades_enabled(self._config):
+                        entry_attr = build_entry_attribution(
+                            self._config,
+                            safety_position_multiplier=self._risk_layer.get_safety_position_multiplier(),
+                            signal_source=str(intent.engine_id)[:20],
+                            signal_metadata=dict(intent.metadata or {}),
+                        )
                     await self._journal.log_track_a_entry(
                         position_id=pos_id,
                         intent=intent,
@@ -194,6 +206,7 @@ class TrackAExecutor:
                         idempotency_key=req.idempotency_key,
                         leverage_used=lev,
                         submitted_position_size_usd=scaled_usd,
+                        attribution=entry_attr,
                     )
                     journal_logged += 1
                 except Exception as e:

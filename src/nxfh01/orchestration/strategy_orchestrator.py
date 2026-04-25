@@ -46,6 +46,7 @@ class StrategyOrchestrator:
         cascade_risk_holder: Any | None = None,
         universe_manager: Any | None = None,
         meta_holder: Any | None = None,
+        risk_layer: Any | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -62,6 +63,7 @@ class StrategyOrchestrator:
         self._cascade_risk_holder = cascade_risk_holder
         self._universe_manager = universe_manager
         self._meta_holder = meta_holder
+        self._risk_layer = risk_layer
 
         orch = config.get("orchestration") or {}
         self._execution_order: list[str] = list(
@@ -136,6 +138,7 @@ class StrategyOrchestrator:
                 hl_client=self._hl_client,
                 exit_engine=self._track_exit_engine,
                 decision_journal=self._decision_journal,
+                risk_layer=self._risk_layer,
             )
 
         for sk in self._execution_order:

@@ -255,6 +255,17 @@ async def maybe_apply_retro_analysis(
             config_path,
             action,
         )
+        if journal.is_connected():
+            try:
+                from src.config_intelligence.registry import register_after_hot_reload
+
+                await register_after_hot_reload(journal.pool, config)
+            except Exception as e:
+                logger.warning(
+                    "CONFIG_INTELLIGENCE_HOT_RELOAD_FAILED error=%s",
+                    e,
+                    exc_info=True,
+                )
     else:
         logger.info(
             "LEARN_CONFIG_WRITTEN path=%s action=%s restart_required=true "

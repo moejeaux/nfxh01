@@ -268,6 +268,18 @@ async def build_context(config: dict) -> dict:
             portfolio_state.sync_from_hl(hl_client, hl_addr)
         if orch_cfg.get("hl_reconcile_on_startup"):
             portfolio_state.reconcile_open_positions_vs_hl(hl_client, hl_addr)
+    if journal is not None and journal.pool is not None:
+        try:
+            from src.config_intelligence.registry import register_active_version
+
+            await register_active_version(journal.pool, config)
+        except Exception as e:
+            logger.warning(
+                "CONFIG_INTELLIGENCE_BOOTSTRAP_FAILED error=%s",
+                e,
+                exc_info=True,
+            )
+
     orchestrator = StrategyOrchestrator(
         config,
         registry,
@@ -284,6 +296,7 @@ async def build_context(config: dict) -> dict:
         cascade_risk_holder=cascade_risk_holder,
         universe_manager=universe_manager,
         meta_holder=meta_holder,
+        risk_layer=risk_layer,
     )
 
     tick_interval = float(

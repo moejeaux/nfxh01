@@ -25,6 +25,7 @@ async def run_track_a_exits(
     hl_client: Any,
     exit_engine: LiveExitEngine,
     decision_journal: DecisionJournal | None = None,
+    risk_layer: Any | None = None,
 ) -> None:
     root = config.get("exits") or {}
     if not root.get("enabled", True):
@@ -60,7 +61,9 @@ async def run_track_a_exits(
                 degen_executor,
                 engine_id,
                 u,
+                config=config,
                 decision_journal=decision_journal,
+                risk_layer=risk_layer,
             )
 
 
@@ -70,7 +73,9 @@ async def _apply_close(
     engine_id: str,
     u: UniversalExit,
     *,
+    config: dict[str, Any],
     decision_journal: DecisionJournal | None = None,
+    risk_layer: Any | None = None,
 ) -> None:
     try:
         degen_executor.submit_close(
@@ -106,7 +111,22 @@ async def _apply_close(
     if decision_journal is None or not decision_journal.is_connected():
         return
     try:
-        await decision_journal.log_track_a_exit(position_id=u.position_id, exit=u)
+        from src.config_intelligence.stamping import (
+            build_exit_attribution,
+            stamp_trades_enabled,
+        )
+
+        ex_attr = None
+        if stamp_trades_enabled(config):
+            sm = (
+                float(risk_layer.get_safety_position_multiplier())
+                if risk_layer is not None
+                else 1.0
+            )
+            ex_attr = build_exit_attribution(config, safety_position_multiplier=sm)
+        await decision_journal.log_track_a_exit(
+            position_id=u.position_id, exit=u, attribution=ex_attr
+        )
     except Exception as e:
         logger.warning(
             "EXIT_TRACK_A_JOURNAL_FAILED position_id=%s coin=%s engine_id=%s error=%s",
