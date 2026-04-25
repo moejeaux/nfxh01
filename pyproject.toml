@@ -29,6 +29,8 @@ strategy_memory = [
     "langchain-core>=0.3",
     "psycopg2-binary>=2.9",
     "sqlalchemy>=2.0",
+    # LangChain PGVector imports pgvector.sqlalchemy (separate from the Postgres extension).
+    "pgvector>=0.2.5",
 ]
 
 [project.scripts]
