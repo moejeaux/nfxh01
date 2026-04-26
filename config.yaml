@@ -364,6 +364,13 @@ acevault:
         minutes: 30
         min_progress_r: 0.30
 
+growi:
+  exit_overrides:
+    ranging:
+      time_stop:
+        minutes: 45
+        min_progress_r: 0.20
+
 growi_hf:
   # Must clear acp.min_trade_size_usd after risk.safety_mode.position_multiplier (e.g. 25×0.45 > 11).
   default_position_size_usd: 25
